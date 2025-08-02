@@ -1,0 +1,5 @@
+/target
+
+*.wav
+transcription_history.json
+.env
