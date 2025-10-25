@@ -17,7 +17,8 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
     dotenv().ok();
 
     let config_path = get_exe_dir().join("config.json");
-    let config_file = File::open(&config_path)?;
+    let config_file = File::open(&config_path)
+        .map_err(|e| format!("Failed to open config.json at {:?}: {}", config_path, e))?;
     let config: Value = serde_json::from_reader(config_file)?;
     let api_key = config["groq_api_key"]
         .as_str()
@@ -38,7 +39,8 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
         get_exe_dir().join(file_path)
     };
 
-    let mut file = File::open(&audio_file_path)?;
+    let mut file = File::open(&audio_file_path)
+        .map_err(|e| format!("Failed to open audio file at {:?}: {}", audio_file_path, e))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
 

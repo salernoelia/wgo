@@ -4,7 +4,7 @@ A lightweight voice transcription tool that listens for global keyboard shortcut
 
 ## Features
 
-- **Global hotkeys**: Alt+Space to toggle recording, Alt+H to show menu
+- **Global hotkeys**: Alt+Space or Meta+Space to toggle recording, Alt+H to show menu
 - **Real-time transcription**: Audio is transcribed using Groq's Whisper API
 - **Automatic clipboard copying**: Transcriptions are automatically copied to clipboard
 - **History management**: View, re-transcribe, and copy previous recordings
@@ -48,10 +48,22 @@ cargo install --path .
 
 ## Configuration
 
-Create a `.env` file in your project directory or set environment variable:
+Create a `config.json` file in the same directory as the executable:
 
-```env
-GROQ_API_KEY=your_groq_api_key_here
+```json
+{
+  "groq_api_key": "your_groq_api_key_here"
+}
+```
+
+You can copy the example configuration file:
+
+```bash
+# For development (debug build)
+cp config.json.example target/debug/config.json
+
+# For release build
+cp config.json.example target/release/config.json
 ```
 
 Get your API key from [Groq Console](https://console.groq.com/).
@@ -63,11 +75,6 @@ Run the application:
 ```bash
 wgo
 ```
-
-### Keyboard shortcuts
-
-- **Alt+Space**: Start/stop audio recording
-- **Alt+H**: Open menu for history management
 
 ### Menu options
 

@@ -132,7 +132,7 @@ impl AudioRecorder {
         self.stream = Some(stream);
         self.is_recording.store(true, Ordering::SeqCst);
         println!("Recording started: {}", filename);
-        self.file_name_history.push(filename.to_string());
+        self.file_name_history.push(filename.clone());
     }
 
     fn stop_recording(&mut self) -> Option<String> {
@@ -147,14 +147,26 @@ impl AudioRecorder {
         let completed_filename = self.current_filename.take();
 
         if let Some(writer_arc) = self.writer.take() {
-            if let Ok(writer) = Arc::try_unwrap(writer_arc) {
-                if let Ok(writer) = writer.into_inner() {
-                    if let Err(err) = writer.finalize() {
-                        eprintln!("Error finalizing WAV file: {}", err);
-                        return None;
-                    } else {
-                        println!("Recording saved successfully");
+            match Arc::try_unwrap(writer_arc) {
+                Ok(writer_mutex) => match writer_mutex.into_inner() {
+                    Ok(writer) => {
+                        if let Err(err) = writer.finalize() {
+                            eprintln!("Error finalizing WAV file: {}", err);
+                            return None;
+                        } else {
+                            println!("Recording saved successfully");
+                        }
                     }
+                    Err(err) => {
+                        eprintln!("Error getting writer mutex: {}", err);
+                        return None;
+                    }
+                },
+                Err(_) => {
+                    eprintln!(
+                        "Error: Multiple references to writer exist, cannot finalize WAV file."
+                    );
+                    return None;
                 }
             }
         }
