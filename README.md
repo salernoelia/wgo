@@ -1,14 +1,7 @@
 # wgo
 
 A lightweight voice transcription tool that listens for global keyboard shortcuts to record audio and transcribe it using Groq's Whisper API.
-
-## Features
-
-- **Global hotkeys**: Alt+Space or Meta+Space to toggle recording, Alt+H to show menu
-- **Real-time transcription**: Audio is transcribed using Groq's Whisper API
-- **Automatic clipboard copying**: Transcriptions are automatically copied to clipboard
-- **History management**: View, re-transcribe, and copy previous recordings
-- **Cross-platform**: Works on macOS, Linux, and Windows
+Pres Alt+Space to toggle recording and after transcription it gets directly added to your clipboard.
 
 ## Installation
 
