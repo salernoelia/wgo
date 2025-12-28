@@ -15,7 +15,7 @@ A lightweight voice transcription tool that listens for global keyboard shortcut
 
 ### Download from GitHub Releases
 
-Pre-built binaries for **macOS**, **Windows**, and **Linux** are available for each release on the [GitHub Releases](https://github.com/yourusername/wgo/releases) page. Download the binary for your platform and follow the instructions below to add it to your PATH.
+Pre-built binaries for **macOS**, **Windows**, and **Linux** are available for each release on the [GitHub Releases](https://github.com/salernoelia/wgo/releases) page. Download the binary for your platform and follow the instructions below to add it to your PATH.
 
 ### Prerequisites
 
@@ -25,7 +25,7 @@ Pre-built binaries for **macOS**, **Windows**, and **Linux** are available for e
 ### Build from source
 
 ```bash
-git clone https://github.com/yourusername/wgo.git
+git clone https://github.com/salernoelia/wgo.git
 cd whisgo-rust
 cargo build --release
 ```
