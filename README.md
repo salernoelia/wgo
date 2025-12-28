@@ -10,7 +10,12 @@ A lightweight voice transcription tool that listens for global keyboard shortcut
 - **History management**: View, re-transcribe, and copy previous recordings
 - **Cross-platform**: Works on macOS, Linux, and Windows
 
+
 ## Installation
+
+### Download from GitHub Releases
+
+Pre-built binaries for **macOS**, **Windows**, and **Linux** are available for each release on the [GitHub Releases](https://github.com/yourusername/wgo/releases) page. Download the binary for your platform and follow the instructions below to add it to your PATH.
 
 ### Prerequisites
 
@@ -69,15 +74,7 @@ wgo
 - **Alt+Space**: Start/stop audio recording
 - **Alt+H**: Open menu for history management
 
-### Menu options
-
-1. **List transcription history** - View all previous transcriptions
-2. **Re-transcribe recording** - Re-process a previous recording
-3. **Copy transcription to clipboard** - Copy any transcription to clipboard
-4. **Clear history** - Remove all stored transcriptions
-5. **Return to listening mode** - Continue listening for shortcuts
-
-## File structure
+## File structure (in `~` (home) directory)
 
 - `transcription_history.json` - Local storage for transcription history
 - `recording_*.wav` - Temporary audio files (created during recording)
