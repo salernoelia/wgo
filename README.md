@@ -79,11 +79,4 @@ wgo
 - `transcription_history.json` - Local storage for transcription history
 - `recording_*.wav` - Temporary audio files (created during recording)
 
-## Dependencies
-
-- `cpal` - Cross-platform audio I/O
-- `hound` - WAV file handling
-- `rdev` - Global keyboard event detection
-- `reqwest` - HTTP client for API requests
-- `arboard` - Clipboard management
 - `serde` - JSON serialization
