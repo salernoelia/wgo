@@ -1,5 +1,4 @@
 use arboard::Clipboard;
-// use radio_rs::*;
 use rdev::{Event, listen};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -111,8 +110,6 @@ fn process_transcription(filename: &str) {
     println!("Transcription: {}", transcription);
     copy_to_clipboard(&transcription);
     save_transcription(filename, &transcription);
-
-    // play_success_sound();
 }
 
 fn copy_to_clipboard(text: &str) {
@@ -129,18 +126,6 @@ fn copy_to_clipboard(text: &str) {
         Err(e) => eprintln!("Failed to copy to clipboard: {}", e),
     }
 }
-
-// fn play_success_sound() {
-//     let mut audio_device = AudioDevice::new();
-
-//     let music = Music::load("recording_1750198707.wav");
-
-//     music.play();
-//     loop {
-//         music.update();
-//         audio_device.sync();
-//     }
-// }
 
 fn save_transcription(filename: &str, transcription: &str) {
     let mut history = TranscriptionHistory::load();
