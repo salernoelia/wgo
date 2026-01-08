@@ -17,15 +17,33 @@ pub struct TranscriptionHistory {
 impl TranscriptionHistory {
     const HISTORY_FILE: &'static str = "transcription_history.json";
 
-    fn get_exe_dir() -> PathBuf {
-        std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    fn get_data_dir() -> PathBuf {
+        if cfg!(target_os = "windows") {
+            std::env::var("APPDATA")
+                .ok()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+                .join("wgo")
+        } else {
+            // Linux/macOS: use XDG_DATA_HOME or ~/.local/share
+            std::env::var("XDG_DATA_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(|h| PathBuf::from(h).join(".local").join("share"))
+                })
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+                .join("wgo")
+        }
     }
 
     fn get_history_path() -> PathBuf {
-        Self::get_exe_dir().join(Self::HISTORY_FILE)
+        let data_dir = Self::get_data_dir();
+        // Ensure directory exists
+        let _ = std::fs::create_dir_all(&data_dir);
+        data_dir.join(Self::HISTORY_FILE)
     }
 
     pub fn new() -> Self {

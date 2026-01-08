@@ -1,7 +1,17 @@
 [package]
-name = "whisgo-rust"
-version = "0.1.0"
-edition = "2024"
+name = "wgo"
+version = "1.0.0"
+edition = "2021"
+authors = ["Elia Salerno"]
+description = "Lightweight voice transcription tool with global hotkeys and Groq Whisper API"
+license = "MIT"
+repository = "https://github.com/salernoelia/wgo"
+keywords = ["transcription", "audio", "whisper", "voice", "recording"]
+categories = ["command-line-utilities", "multimedia::audio"]
+
+[[bin]]
+name = "wgo"
+path = "src/main.rs"
 
 [dependencies]
 rdev = "0.5.3"

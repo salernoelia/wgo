@@ -1,5 +1,5 @@
 use arboard::Clipboard;
-use rdev::{Event, listen};
+use rdev::{listen, Event};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -76,7 +76,7 @@ fn create_callback(
         }
         Some(ShortcutType::ShowMenu) => {
             println!("Alt+H detected: showing menu");
-            menu::show_menu();
+            menu::show_menu(&recorder);
             println!("Listening for key events again...");
         }
         None => {}

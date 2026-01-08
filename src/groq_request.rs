@@ -1,6 +1,6 @@
 use dotenv::dotenv;
-use reqwest::blocking::Client;
 use reqwest::blocking::multipart::{Form, Part};
+use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs::File;
 use std::io::Read;
@@ -11,6 +11,30 @@ fn get_exe_dir() -> PathBuf {
         .ok()
         .and_then(|path| path.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+}
+
+fn get_recordings_dir() -> PathBuf {
+    let data_dir = if cfg!(target_os = "windows") {
+        std::env::var("APPDATA")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join("wgo")
+    } else {
+        // Linux/macOS: use XDG_DATA_HOME or ~/.local/share
+        std::env::var("XDG_DATA_HOME")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".local").join("share"))
+            })
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join("wgo")
+    };
+
+    data_dir.join("recordings")
 }
 
 pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -29,14 +53,17 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
     }
     let url = "https://api.groq.com/openai/v1/audio/transcriptions";
 
-    // Handle file path - if it's just a filename, make it relative to exe dir
-    let audio_file_path = if Path::new(file_path).is_absolute()
-        || file_path.contains('/')
-        || file_path.contains('\\')
-    {
+    let audio_file_path = if Path::new(file_path).is_absolute() {
+        PathBuf::from(file_path)
+    } else if file_path.contains('/') || file_path.contains('\\') {
         PathBuf::from(file_path)
     } else {
-        get_exe_dir().join(file_path)
+        let recordings_path = get_recordings_dir().join(file_path);
+        if recordings_path.exists() {
+            recordings_path
+        } else {
+            get_exe_dir().join(file_path)
+        }
     };
 
     let mut file = File::open(&audio_file_path)

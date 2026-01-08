@@ -1,10 +1,12 @@
+use crate::audio_recorder::AudioRecorder;
 use crate::groq_request::transcribe_audio;
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use arboard::Clipboard;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-pub fn show_menu() {
+pub fn show_menu(recorder: &Arc<Mutex<AudioRecorder>>) {
     loop {
         println!("\n{:=<50}", "");
         println!("WHISGO MENU");
@@ -13,6 +15,7 @@ pub fn show_menu() {
         println!("2. Re-transcribe recording");
         println!("3. Copy transcription to clipboard");
         println!("4. Clear history");
+        println!("5. Select microphone device");
         println!("0. Return to listening mode");
         println!("{:-<50}", "");
         print!("Choose an option: ");
@@ -28,6 +31,7 @@ pub fn show_menu() {
             "2" => resend_menu(),
             "3" => copy_menu(),
             "4" => clear_history(),
+            "5" => select_microphone(recorder),
             "0" => break,
             _ => println!("Invalid option. Try again."),
         }
@@ -190,5 +194,20 @@ fn truncate_text(text: &str, max_len: usize) -> String {
         text.to_string()
     } else {
         format!("{}...", &text[..max_len])
+    }
+}
+
+fn select_microphone(recorder: &Arc<Mutex<AudioRecorder>>) {
+    let mut recorder = match recorder.lock() {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("Failed to lock recorder");
+            return;
+        }
+    };
+
+    match recorder.select_device() {
+        Ok(_) => println!("\nDevice selection saved. It will be used for the next recording."),
+        Err(e) => eprintln!("Error selecting device: {}", e),
     }
 }
