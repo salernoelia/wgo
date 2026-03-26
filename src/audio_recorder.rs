@@ -2,7 +2,7 @@ use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -10,6 +10,7 @@ pub struct AudioRecorder {
     stream: Option<cpal::Stream>,
     is_recording: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
+    level_milli: Arc<AtomicU32>,
     writer: Option<Arc<Mutex<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
     current_filename: Option<String>,
     device_name: Option<String>,
@@ -21,6 +22,7 @@ impl AudioRecorder {
             stream: None,
             is_recording: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
+            level_milli: Arc::new(AtomicU32::new(0)),
             writer: None,
             current_filename: None,
             device_name: None,
@@ -63,6 +65,10 @@ impl AudioRecorder {
 
     pub fn is_paused(&self) -> bool {
         self.is_paused.load(Ordering::SeqCst)
+    }
+
+    pub fn input_level(&self) -> f32 {
+        self.level_milli.load(Ordering::SeqCst) as f32 / 1000.0
     }
 
     pub fn save_transcription(filename: &str, transcription: &str) {
@@ -183,12 +189,14 @@ impl AudioRecorder {
         self.writer = Some(writer.clone());
         let is_recording = self.is_recording.clone();
         let is_paused = self.is_paused.clone();
+        let level_milli = self.level_milli.clone();
 
         let stream = match sample_format {
             cpal::SampleFormat::F32 => {
                 let writer_clone = writer.clone();
                 let is_recording_clone = is_recording.clone();
                 let is_paused_clone = is_paused.clone();
+                let level_milli_clone = level_milli.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -199,9 +207,13 @@ impl AudioRecorder {
                                 return;
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
+                                let mut peak = 0.0f32;
                                 for &sample in data {
+                                    peak = peak.max(sample.abs());
                                     let _ = writer.write_sample(Self::i16_from_f32(sample));
                                 }
+                                let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
+                                level_milli_clone.store(scaled, Ordering::SeqCst);
                             }
                         },
                         move |err| eprintln!("Stream error: {}", err),
@@ -213,6 +225,7 @@ impl AudioRecorder {
                 let writer_clone = writer.clone();
                 let is_recording_clone = is_recording.clone();
                 let is_paused_clone = is_paused.clone();
+                let level_milli_clone = level_milli.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -223,9 +236,13 @@ impl AudioRecorder {
                                 return;
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
+                                let mut peak = 0.0f32;
                                 for &sample in data {
+                                    peak = peak.max((sample as f32 / i16::MAX as f32).abs());
                                     let _ = writer.write_sample(sample);
                                 }
+                                let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
+                                level_milli_clone.store(scaled, Ordering::SeqCst);
                             }
                         },
                         move |err| eprintln!("Stream error: {}", err),
@@ -237,6 +254,7 @@ impl AudioRecorder {
                 let writer_clone = writer.clone();
                 let is_recording_clone = is_recording.clone();
                 let is_paused_clone = is_paused.clone();
+                let level_milli_clone = level_milli.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -247,9 +265,14 @@ impl AudioRecorder {
                                 return;
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
+                                let mut peak = 0.0f32;
                                 for &sample in data {
-                                    let _ = writer.write_sample(Self::i16_from_u16(sample));
+                                    let i16_sample = Self::i16_from_u16(sample);
+                                    peak = peak.max((i16_sample as f32 / i16::MAX as f32).abs());
+                                    let _ = writer.write_sample(i16_sample);
                                 }
+                                let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
+                                level_milli_clone.store(scaled, Ordering::SeqCst);
                             }
                         },
                         move |err| eprintln!("Stream error: {}", err),
@@ -296,6 +319,7 @@ impl AudioRecorder {
 
         self.is_recording.store(false, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
+        self.level_milli.store(0, Ordering::SeqCst);
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 

@@ -26,8 +26,8 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("wgo")
-            .with_inner_size([960.0, 580.0])
-            .with_min_inner_size([760.0, 420.0]),
+            .with_inner_size([620.0, 480.0])
+            .with_min_inner_size([620.0, 480.0]),
         ..Default::default()
     };
 

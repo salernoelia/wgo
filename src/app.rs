@@ -7,7 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const MIC_GRAPH_HISTORY_LEN: usize = 120;
+const MIC_GRAPH_SAMPLE_INTERVAL: Duration = Duration::from_millis(16);
 
 pub struct WgoApp {
     recorder: Arc<Mutex<AudioRecorder>>,
@@ -21,8 +24,17 @@ pub struct WgoApp {
     hotkey_rx: Receiver<HotkeyCommand>,
     ui_event_rx: Receiver<UiEvent>,
     ui_event_tx: mpsc::Sender<UiEvent>,
+    active_tab: AppTab,
+    mic_level_history: Vec<f32>,
+    last_mic_graph_sample: Instant,
     status_line: String,
     last_transcription: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppTab {
+    Recorder,
+    Settings,
 }
 
 #[derive(Clone, Copy)]
@@ -65,9 +77,42 @@ impl WgoApp {
             hotkey_rx,
             ui_event_rx,
             ui_event_tx,
+            active_tab: AppTab::Recorder,
+            mic_level_history: vec![0.0; MIC_GRAPH_HISTORY_LEN],
+            last_mic_graph_sample: Instant::now(),
             status_line: "Ready".to_string(),
             last_transcription: String::new(),
         }
+    }
+
+    fn sample_mic_graph_if_due(&mut self) {
+        let now = Instant::now();
+        let mut updates = 0usize;
+
+        while now.duration_since(self.last_mic_graph_sample) >= MIC_GRAPH_SAMPLE_INTERVAL {
+            self.last_mic_graph_sample += MIC_GRAPH_SAMPLE_INTERVAL;
+            self.push_audio_level_sample();
+            updates += 1;
+
+            if updates >= 8 {
+                self.last_mic_graph_sample = now;
+                break;
+            }
+        }
+    }
+
+    fn push_audio_level_sample(&mut self) {
+        let level = self
+            .recorder
+            .lock()
+            .map(|r| r.input_level())
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+
+        if !self.mic_level_history.is_empty() {
+            self.mic_level_history.remove(0);
+        }
+        self.mic_level_history.push(level);
     }
 
     fn apply_hotkeys(&mut self, ctx: &egui::Context) {
@@ -136,7 +181,7 @@ impl WgoApp {
                     self.last_transcription = text.clone();
                     self.status_line = match markdown_path {
                         Some(path) => format!(
-                            "Transcribed {} and saved markdown to {}",
+                            "Audio: {} \nMarkdown:{}",
                             audio_path,
                             path.to_string_lossy()
                         ),
@@ -165,13 +210,19 @@ impl WgoApp {
             .map(|rect| rect.left())
             .unwrap_or(20.0);
 
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+            egui::WindowLevel::Normal,
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+            egui::WindowLevel::AlwaysOnTop,
+        ));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, 0.0)));
     }
 
     fn reset_window_level(&self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+            egui::WindowLevel::Normal,
+        ));
     }
 
     fn is_recording(&self) -> bool {
@@ -299,9 +350,6 @@ impl WgoApp {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Settings");
-        ui.separator();
-
         ui.label("Groq API key");
         ui.add(
             egui::TextEdit::singleline(&mut self.config.groq_api_key)
@@ -354,22 +402,19 @@ impl WgoApp {
             );
             if ui.button("Record").clicked() {
                 self.recording_target = Some(ShortcutTarget::Toggle);
-                self.status_line = "Press a shortcut (must include at least one modifier)."
-                    .to_string();
+                self.status_line =
+                    "Press a shortcut (must include at least one modifier).".to_string();
             }
         });
 
         ui.add_space(8.0);
         ui.label("Show window shortcut");
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.pending_show_shortcut)
-                    .hint_text("Alt+H"),
-            );
+            ui.add(egui::TextEdit::singleline(&mut self.pending_show_shortcut).hint_text("Alt+H"));
             if ui.button("Record").clicked() {
                 self.recording_target = Some(ShortcutTarget::ShowWindow);
-                self.status_line = "Press a shortcut (must include at least one modifier)."
-                    .to_string();
+                self.status_line =
+                    "Press a shortcut (must include at least one modifier).".to_string();
             }
         });
 
@@ -390,9 +435,6 @@ impl WgoApp {
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
         let is_recording = self.is_recording();
         let is_paused = self.is_paused();
-
-        ui.heading("Recorder");
-        ui.separator();
 
         ui.horizontal(|ui| {
             if ui
@@ -426,6 +468,100 @@ impl WgoApp {
             self.config.toggle_shortcut, self.config.show_window_shortcut
         ));
     }
+
+    fn latest_transcription_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Last transcription");
+            let can_copy = !self.last_transcription.is_empty();
+            if ui
+                .add_enabled(can_copy, egui::Button::new("Copy"))
+                .clicked()
+            {
+                crate::utils::copy_to_clipboard(&self.last_transcription);
+                self.status_line = "Copied latest transcription to clipboard".to_string();
+            }
+        });
+
+        if self.last_transcription.is_empty() {
+            ui.label("No transcription yet.");
+        } else {
+            ui.add(egui::Label::new(&self.last_transcription).wrap());
+        }
+    }
+
+    fn tabs_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.active_tab, AppTab::Recorder, "Recorder");
+            ui.selectable_value(&mut self.active_tab, AppTab::Settings, "Settings");
+        });
+        ui.separator();
+    }
+
+    fn mic_graph_ui(&self, ui: &mut egui::Ui) {
+        let desired_size = egui::vec2(ui.available_width(), 72.0);
+        let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        let is_recording = self.is_recording();
+
+        let bg = ui.visuals().extreme_bg_color;
+        painter.rect_filled(rect, 6.0, bg);
+        painter.rect_stroke(
+            rect,
+            6.0,
+            egui::Stroke::new(1.0, ui.visuals().window_stroke().color),
+            egui::StrokeKind::Outside,
+        );
+
+        let wave_color = if is_recording {
+            egui::Color32::from_rgb(245, 72, 72)
+        } else {
+            egui::Color32::from_rgb(80, 210, 140)
+        };
+
+        let center_y = rect.center().y;
+        painter.line_segment(
+            [
+                egui::pos2(rect.left(), center_y),
+                egui::pos2(rect.right(), center_y),
+            ],
+            egui::Stroke::new(1.0, wave_color.gamma_multiply(0.35)),
+        );
+
+        let len = self.mic_level_history.len().max(2);
+        let step = if len > 1 {
+            rect.width() / (len - 1) as f32
+        } else {
+            rect.width()
+        };
+
+        let mut points = Vec::with_capacity(len);
+        for (idx, value) in self.mic_level_history.iter().enumerate() {
+            let x = rect.left() + idx as f32 * step;
+            let boosted = (value.clamp(0.0, 1.0) * 4.0).clamp(0.0, 1.0);
+            let polarity = if idx % 2 == 0 { 1.0 } else { -1.0 };
+            let amp = boosted * rect.height() * 0.42;
+            let y = center_y - (polarity * amp);
+            points.push(egui::pos2(x, y));
+        }
+
+        if points.len() >= 2 {
+            let stroke_width = 1.2;
+            let first = points.first().copied();
+            let last = points.last().copied();
+            painter.add(egui::Shape::line(
+                points,
+                egui::Stroke::new(stroke_width, wave_color),
+            ));
+
+            // Rounded caps to keep the waveform visually soft.
+            if let Some(p) = first {
+                painter.circle_filled(p, stroke_width * 0.5, wave_color);
+            }
+            if let Some(p) = last {
+                painter.circle_filled(p, stroke_width * 0.5, wave_color);
+            }
+        }
+    }
 }
 
 impl eframe::App for WgoApp {
@@ -434,27 +570,41 @@ impl eframe::App for WgoApp {
         self.apply_hotkeys(ctx);
         self.apply_ui_events();
         self.apply_shortcut_recording(ctx);
+        self.sample_mic_graph_if_due();
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.heading("wgo");
-            ui.label(&self.status_line);
+            self.mic_graph_ui(ui);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.columns(2, |columns| {
-                self.controls_ui(&mut columns[0]);
-                self.settings_ui(&mut columns[1]);
+        egui::TopBottomPanel::bottom("status_bar")
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(&self.status_line);
             });
 
-            ui.separator();
-            ui.heading("Last transcription");
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if self.last_transcription.is_empty() {
-                    ui.label("No transcription yet.");
-                } else {
-                    ui.label(&self.last_transcription);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.tabs_ui(ui);
+
+            match self.active_tab {
+                AppTab::Recorder => {
+                    egui::ScrollArea::vertical()
+                        .id_salt("recorder_tab_scroll")
+                        .show(ui, |ui| {
+                            self.controls_ui(ui);
+                            ui.separator();
+                            self.latest_transcription_ui(ui);
+                        });
                 }
-            });
+                AppTab::Settings => {
+                    egui::ScrollArea::vertical()
+                        .id_salt("settings_tab_scroll")
+                        .show(ui, |ui| {
+                            self.settings_ui(ui);
+                            ui.separator();
+                            self.latest_transcription_ui(ui);
+                        });
+                }
+            }
         });
     }
 }

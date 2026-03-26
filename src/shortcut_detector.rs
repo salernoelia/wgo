@@ -109,8 +109,7 @@ impl ShortcutDetector {
             EventType::KeyRelease(Key::MetaLeft) | EventType::KeyRelease(Key::MetaRight) => {
                 self.meta_pressed.store(false, Ordering::SeqCst);
             }
-            EventType::KeyRelease(Key::ControlLeft)
-            | EventType::KeyRelease(Key::ControlRight) => {
+            EventType::KeyRelease(Key::ControlLeft) | EventType::KeyRelease(Key::ControlRight) => {
                 self.ctrl_pressed.store(false, Ordering::SeqCst);
             }
             EventType::KeyRelease(Key::ShiftLeft) | EventType::KeyRelease(Key::ShiftRight) => {
@@ -291,7 +290,10 @@ fn apply_bindings_macos(
             registered.push(show);
         }
     } else {
-        eprintln!("Invalid show-window shortcut '{}'.", bindings.show_window_shortcut);
+        eprintln!(
+            "Invalid show-window shortcut '{}'.",
+            bindings.show_window_shortcut
+        );
     }
 }
 
@@ -329,7 +331,10 @@ fn key_from_name(name: &str) -> Option<Key> {
     }
 }
 
-pub fn start_global_hotkeys(sender: Sender<HotkeyCommand>, initial: HotkeyBindings) -> HotkeyRuntime {
+pub fn start_global_hotkeys(
+    sender: Sender<HotkeyCommand>,
+    initial: HotkeyBindings,
+) -> HotkeyRuntime {
     let (control_tx, control_rx) = mpsc::channel();
 
     #[cfg(not(target_os = "macos"))]
@@ -371,7 +376,9 @@ pub fn start_global_hotkeys(sender: Sender<HotkeyCommand>, initial: HotkeyBindin
                     }
                 }
 
-                if let Ok(event) = GlobalHotKeyEvent::receiver().recv_timeout(Duration::from_millis(250)) {
+                if let Ok(event) =
+                    GlobalHotKeyEvent::receiver().recv_timeout(Duration::from_millis(250))
+                {
                     if event.state != HotKeyState::Pressed {
                         continue;
                     }
