@@ -34,6 +34,10 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn has_api_key(&self) -> bool {
+        !self.groq_api_key.trim().is_empty()
+    }
+
     pub fn app_data_dir() -> PathBuf {
         let base = dirs::data_local_dir()
             .or_else(dirs::data_dir)
@@ -81,5 +85,27 @@ impl AppConfig {
             .map_err(|e| format!("Failed to serialize config: {e}"))?;
 
         fs::write(path, content).map_err(|e| format!("Failed to write config.json: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn has_api_key_is_false_for_blank_and_whitespace() {
+        let mut cfg = AppConfig::default();
+        cfg.groq_api_key = String::new();
+        assert!(!cfg.has_api_key());
+
+        cfg.groq_api_key = "   \n\t ".to_string();
+        assert!(!cfg.has_api_key());
+    }
+
+    #[test]
+    fn has_api_key_is_true_for_non_whitespace() {
+        let mut cfg = AppConfig::default();
+        cfg.groq_api_key = "  abc123  ".to_string();
+        assert!(cfg.has_api_key());
     }
 }

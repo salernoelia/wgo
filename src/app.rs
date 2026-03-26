@@ -34,6 +34,7 @@ pub struct WgoApp {
     window_restore_inner_size: Option<egui::Vec2>,
     status_line: String,
     last_transcription: String,
+    last_failed_audio_path: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -54,7 +55,10 @@ enum UiEvent {
         text: String,
         markdown_path: Option<PathBuf>,
     },
-    Error(String),
+    TranscriptionFailed {
+        audio_path: String,
+        error: String,
+    },
 }
 
 impl WgoApp {
@@ -89,7 +93,45 @@ impl WgoApp {
             window_restore_inner_size: None,
             status_line: "Ready".to_string(),
             last_transcription: String::new(),
+            last_failed_audio_path: None,
         }
+    }
+
+    fn start_transcription_job(&self, audio_path: String) {
+        let cfg = self.config.clone();
+        let ui_tx = self.ui_event_tx.clone();
+
+        std::thread::spawn(move || match crate::groq_request::transcribe_audio(&audio_path) {
+            Ok(text) => {
+                crate::utils::copy_to_clipboard(&text);
+                AudioRecorder::save_transcription(&audio_path, &text);
+
+                let md_path = match save_transcription_markdown(&cfg, &audio_path, &text) {
+                    Ok(path) => Some(path),
+                    Err(err) => {
+                        let _ = ui_tx.send(UiEvent::TranscriptionFailed {
+                            audio_path: audio_path.clone(),
+                            error: format!(
+                                "Transcription succeeded but markdown save failed: {err}"
+                            ),
+                        });
+                        None
+                    }
+                };
+
+                let _ = ui_tx.send(UiEvent::TranscriptionReady {
+                    audio_path,
+                    text,
+                    markdown_path: md_path,
+                });
+            }
+            Err(err) => {
+                let _ = ui_tx.send(UiEvent::TranscriptionFailed {
+                    audio_path,
+                    error: format!("Transcription error: {err}"),
+                });
+            }
+        });
     }
 
     fn sample_mic_graph_if_due(&mut self) {
@@ -183,6 +225,7 @@ impl WgoApp {
                     markdown_path,
                 } => {
                     self.last_transcription = text.clone();
+                    self.last_failed_audio_path = None;
                     self.status_line = match markdown_path {
                         Some(path) => format!(
                             "Audio: {} \nMarkdown:{}",
@@ -192,7 +235,10 @@ impl WgoApp {
                         None => format!("Transcribed {}", audio_path),
                     };
                 }
-                UiEvent::Error(err) => self.status_line = err,
+                UiEvent::TranscriptionFailed { audio_path, error } => {
+                    self.last_failed_audio_path = Some(audio_path.clone());
+                    self.status_line = format!("{error} | You can retry for {audio_path}");
+                }
             }
         }
     }
@@ -291,6 +337,14 @@ impl WgoApp {
     }
 
     fn start_recording(&mut self, ctx: &egui::Context) {
+        if !has_non_empty_api_key(&self.config) {
+            self.active_tab = AppTab::Settings;
+            self.status_line =
+                "Set a Groq API key in Settings before starting a recording.".to_string();
+            self.bring_to_front(ctx);
+            return;
+        }
+
         let start_result = match self.recorder.lock() {
             Ok(mut recorder) => recorder.start_recording(),
             Err(_) => {
@@ -380,36 +434,24 @@ impl WgoApp {
         }
 
         self.status_line = format!("Recording stopped. Transcribing {}...", filename);
-        let cfg = self.config.clone();
-        let ui_tx = self.ui_event_tx.clone();
+        self.start_transcription_job(filename);
+    }
 
-        std::thread::spawn(
-            move || match crate::groq_request::transcribe_audio(&filename) {
-                Ok(text) => {
-                    crate::utils::copy_to_clipboard(&text);
-                    AudioRecorder::save_transcription(&filename, &text);
+    fn retry_last_transcription(&mut self) {
+        let Some(audio_path) = self.last_failed_audio_path.clone() else {
+            self.status_line = "No failed transcription to retry.".to_string();
+            return;
+        };
 
-                    let md_path = match save_transcription_markdown(&cfg, &filename, &text) {
-                        Ok(path) => Some(path),
-                        Err(err) => {
-                            let _ = ui_tx.send(UiEvent::Error(format!(
-                                "Transcription succeeded but markdown save failed: {err}"
-                            )));
-                            None
-                        }
-                    };
+        if !has_non_empty_api_key(&self.config) {
+            self.active_tab = AppTab::Settings;
+            self.status_line =
+                "Cannot retry without a Groq API key. Add one in Settings.".to_string();
+            return;
+        }
 
-                    let _ = ui_tx.send(UiEvent::TranscriptionReady {
-                        audio_path: filename,
-                        text,
-                        markdown_path: md_path,
-                    });
-                }
-                Err(err) => {
-                    let _ = ui_tx.send(UiEvent::Error(format!("Transcription error: {err}")));
-                }
-            },
-        );
+        self.status_line = format!("Retrying transcription for {audio_path}...");
+        self.start_transcription_job(audio_path);
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
@@ -419,6 +461,12 @@ impl WgoApp {
                 .password(true)
                 .hint_text("Enter your Groq API key"),
         );
+        if !has_non_empty_api_key(&self.config) {
+            ui.small(
+                egui::RichText::new("API key is required before you can start recording.")
+                    .color(ui.visuals().warn_fg_color),
+            );
+        }
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -504,12 +552,16 @@ impl WgoApp {
     fn controls_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
         let is_recording = self.is_recording();
         let is_paused = self.is_paused();
+        let has_api_key = has_non_empty_api_key(&self.config);
+        let can_start = !is_recording && has_api_key;
 
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!is_recording, egui::Button::new("Start"))
-                .clicked()
-            {
+            let mut start_response = ui.add_enabled(can_start, egui::Button::new("Start"));
+            if !has_api_key {
+                start_response =
+                    start_response.on_disabled_hover_text("Set your Groq API key in Settings first.");
+            }
+            if start_response.clicked() {
                 self.start_recording(ui.ctx());
             }
 
@@ -536,6 +588,16 @@ impl WgoApp {
                 self.config.toggle_shortcut, self.config.show_window_shortcut
             ));
 
+            if let Some(audio_path) = self.last_failed_audio_path.clone() {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(format!("Last transcription failed: {audio_path}"));
+                    if ui.button("Retry transcription").clicked() {
+                        self.retry_last_transcription();
+                    }
+                });
+            }
+
             let mic_test_active = self.is_monitoring();
             let mic_test_label = if mic_test_active {
                 "Stop microphone test"
@@ -554,6 +616,15 @@ impl WgoApp {
     fn latest_transcription_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("Last transcription");
+            if ui
+                .add_enabled(
+                    self.last_failed_audio_path.is_some(),
+                    egui::Button::new("Retry failed"),
+                )
+                .clicked()
+            {
+                self.retry_last_transcription();
+            }
             let can_copy = !self.last_transcription.is_empty();
             if ui
                 .add_enabled(can_copy, egui::Button::new("Copy"))
@@ -808,4 +879,76 @@ fn save_transcription_markdown(
 
     fs::write(&path, body).map_err(|e| format!("Failed to write markdown file: {e}"))?;
     Ok(path)
+}
+
+fn has_non_empty_api_key(config: &AppConfig) -> bool {
+    config.has_api_key()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn key_event_to_shortcut_requires_modifier() {
+        let no_mods = egui::Modifiers::default();
+        assert_eq!(key_event_to_shortcut(egui::Key::A, no_mods), None);
+    }
+
+    #[test]
+    fn key_event_to_shortcut_formats_modifiers_and_key() {
+        let mods = egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            key_event_to_shortcut(egui::Key::Space, mods),
+            Some("Ctrl+Shift+Space".to_string())
+        );
+    }
+
+    #[test]
+    fn has_non_empty_api_key_trims_whitespace() {
+        let mut cfg = AppConfig::default();
+        cfg.groq_api_key = "   ".to_string();
+        assert!(!has_non_empty_api_key(&cfg));
+
+        cfg.groq_api_key = " key_123 ".to_string();
+        assert!(has_non_empty_api_key(&cfg));
+    }
+
+    #[test]
+    fn save_transcription_markdown_sanitizes_and_adds_extension() {
+        let tmp = tempdir().expect("tempdir");
+        let mut cfg = AppConfig::default();
+        cfg.markdown_dir = tmp.path().to_string_lossy().to_string();
+        cfg.markdown_pattern = "bad:name*pattern".to_string();
+
+        let path = save_transcription_markdown(&cfg, "audio.wav", "hello").expect("save");
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("filename");
+
+        assert!(file_name.ends_with(".md"));
+        assert!(!file_name.contains(':'));
+        assert!(!file_name.contains('*'));
+    }
+
+    #[test]
+    fn save_transcription_markdown_avoids_overwrite() {
+        let tmp = tempdir().expect("tempdir");
+        let mut cfg = AppConfig::default();
+        cfg.markdown_dir = tmp.path().to_string_lossy().to_string();
+        cfg.markdown_pattern = "fixed_name.md".to_string();
+
+        let first = save_transcription_markdown(&cfg, "a.wav", "one").expect("first");
+        let second = save_transcription_markdown(&cfg, "b.wav", "two").expect("second");
+
+        assert_ne!(first, second);
+        assert!(first.exists());
+        assert!(second.exists());
+    }
 }
