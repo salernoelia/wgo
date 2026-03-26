@@ -1,6 +1,6 @@
 [package]
 name = "wgo"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["Elia Salerno"]
 description = "Lightweight voice transcription tool with global hotkeys and Groq Whisper API"
