@@ -103,17 +103,20 @@ impl AudioRecorder {
         let host = cpal::default_host();
 
         if let Some(ref device_name) = self.device_name {
-            let found_device = host.input_devices().ok().and_then(|devices| {
-                devices
-                    .filter_map(|d| {
-                        d.name().ok().and_then(
-                            |name| {
-                                if name == *device_name { Some(d) } else { None }
-                            },
-                        )
-                    })
-                    .next()
-            });
+            let found_device =
+                host.input_devices().ok().and_then(|devices| {
+                    devices
+                        .filter_map(|d| {
+                            d.name().ok().and_then(|name| {
+                                if name == *device_name {
+                                    Some(d)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .next()
+                });
 
             match found_device {
                 Some(device) => {
