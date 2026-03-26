@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 
 const MIC_GRAPH_HISTORY_LEN: usize = 120;
 const MIC_GRAPH_SAMPLE_INTERVAL: Duration = Duration::from_millis(16);
+const WINDOW_NORMAL_SIZE: [f32; 2] = [620.0, 480.0];
+const WINDOW_RECORDING_SIZE: [f32; 2] = [420.0, 130.0];
+const WINDOW_RECORDING_MARGIN: f32 = 16.0;
 
 pub struct WgoApp {
     recorder: Arc<Mutex<AudioRecorder>>,
@@ -27,6 +30,8 @@ pub struct WgoApp {
     active_tab: AppTab,
     mic_level_history: Vec<f32>,
     last_mic_graph_sample: Instant,
+    window_restore_outer_pos: Option<egui::Pos2>,
+    window_restore_inner_size: Option<egui::Vec2>,
     status_line: String,
     last_transcription: String,
 }
@@ -80,6 +85,8 @@ impl WgoApp {
             active_tab: AppTab::Recorder,
             mic_level_history: vec![0.0; MIC_GRAPH_HISTORY_LEN],
             last_mic_graph_sample: Instant::now(),
+            window_restore_outer_pos: None,
+            window_restore_inner_size: None,
             status_line: "Ready".to_string(),
             last_transcription: String::new(),
         }
@@ -120,12 +127,9 @@ impl WgoApp {
             match cmd {
                 HotkeyCommand::ToggleRecording => {
                     if self.is_recording() {
-                        self.bring_to_front(ctx);
-                        self.stop_recording();
-                        self.reset_window_level(ctx);
+                        self.stop_recording(ctx);
                     } else {
-                        self.bring_to_front_for_recording(ctx);
-                        self.start_recording();
+                        self.start_recording(ctx);
                     }
                 }
                 HotkeyCommand::ShowWindow => self.bring_to_front(ctx),
@@ -202,27 +206,46 @@ impl WgoApp {
         ));
     }
 
-    fn bring_to_front_for_recording(&self, ctx: &egui::Context) {
+    fn enter_recording_mode(&mut self, ctx: &egui::Context) {
+        let viewport_state = ctx.input(|i| i.viewport().clone());
+        self.window_restore_outer_pos = viewport_state.outer_rect.map(|rect| rect.min);
+        self.window_restore_inner_size = viewport_state.inner_rect.map(|rect| rect.size());
+
         self.bring_to_front(ctx);
 
         let x = ctx
-            .input(|i| i.viewport().outer_rect)
-            .map(|rect| rect.left())
-            .unwrap_or(20.0);
+            .input(|i| i.viewport().monitor_size)
+            .map(|size| (size.x - WINDOW_RECORDING_SIZE[0] - WINDOW_RECORDING_MARGIN).max(0.0))
+            .unwrap_or(WINDOW_RECORDING_MARGIN);
 
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            WINDOW_RECORDING_SIZE[0],
+            WINDOW_RECORDING_SIZE[1],
+        )));
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
             egui::WindowLevel::Normal,
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
             egui::WindowLevel::AlwaysOnTop,
         ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, 0.0)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            x,
+            WINDOW_RECORDING_MARGIN,
+        )));
     }
 
-    fn reset_window_level(&self, ctx: &egui::Context) {
+    fn exit_recording_mode(&self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
             egui::WindowLevel::Normal,
         ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+            self.window_restore_inner_size
+                .unwrap_or(egui::vec2(WINDOW_NORMAL_SIZE[0], WINDOW_NORMAL_SIZE[1])),
+        ));
+
+        if let Some(pos) = self.window_restore_outer_pos {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+        }
     }
 
     fn is_recording(&self) -> bool {
@@ -234,6 +257,13 @@ impl WgoApp {
 
     fn is_paused(&self) -> bool {
         self.recorder.lock().map(|r| r.is_paused()).unwrap_or(false)
+    }
+
+    fn is_monitoring(&self) -> bool {
+        self.recorder
+            .lock()
+            .map(|r| r.is_monitoring())
+            .unwrap_or(false)
     }
 
     fn refresh_microphones(&mut self) {
@@ -260,17 +290,45 @@ impl WgoApp {
         }
     }
 
-    fn start_recording(&mut self) {
-        match self.recorder.lock() {
-            Ok(mut recorder) => match recorder.start_recording() {
-                Ok(path) => {
-                    self.status_line = format!("Recording started: {path}");
+    fn start_recording(&mut self, ctx: &egui::Context) {
+        let start_result = match self.recorder.lock() {
+            Ok(mut recorder) => recorder.start_recording(),
+            Err(_) => {
+                self.status_line = "Failed to lock recorder".to_string();
+                return;
+            }
+        };
+
+        match start_result {
+            Ok(path) => {
+                self.status_line = format!("Recording started: {path}");
+                self.enter_recording_mode(ctx);
+            }
+            Err(err) => {
+                self.status_line = err;
+            }
+        }
+    }
+
+    fn toggle_microphone_test(&mut self) {
+        let result = match self.recorder.lock() {
+            Ok(mut recorder) => {
+                if recorder.is_monitoring() {
+                    recorder.stop_monitoring().map(|_| false)
+                } else {
+                    recorder.start_monitoring().map(|_| true)
                 }
-                Err(err) => {
-                    self.status_line = err;
-                }
-            },
-            Err(_) => self.status_line = "Failed to lock recorder".to_string(),
+            }
+            Err(_) => {
+                self.status_line = "Failed to lock recorder".to_string();
+                return;
+            }
+        };
+
+        match result {
+            Ok(true) => self.status_line = "Microphone test started".to_string(),
+            Ok(false) => self.status_line = "Microphone test stopped".to_string(),
+            Err(err) => self.status_line = err,
         }
     }
 
@@ -297,7 +355,7 @@ impl WgoApp {
         }
     }
 
-    fn stop_recording(&mut self) {
+    fn stop_recording(&mut self, ctx: &egui::Context) {
         let filename = match self.recorder.lock() {
             Ok(mut recorder) => match recorder.stop_recording() {
                 Ok(Some(path)) => path,
@@ -315,6 +373,11 @@ impl WgoApp {
                 return;
             }
         };
+
+        self.exit_recording_mode(ctx);
+        if self.config.minimize_on_stop {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
 
         self.status_line = format!("Recording stopped. Transcribing {}...", filename);
         let cfg = self.config.clone();
@@ -393,6 +456,12 @@ impl WgoApp {
         );
         ui.small("Tokens: {date}, {time}, {timestamp}");
 
+        ui.add_space(8.0);
+        ui.checkbox(
+            &mut self.config.minimize_on_stop,
+            "Minimize window when stopping recording",
+        );
+
         ui.add_space(12.0);
         ui.label("Toggle recording shortcut");
         ui.horizontal(|ui| {
@@ -432,7 +501,7 @@ impl WgoApp {
         }
     }
 
-    fn controls_ui(&mut self, ui: &mut egui::Ui) {
+    fn controls_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
         let is_recording = self.is_recording();
         let is_paused = self.is_paused();
 
@@ -441,8 +510,7 @@ impl WgoApp {
                 .add_enabled(!is_recording, egui::Button::new("Start"))
                 .clicked()
             {
-                self.bring_to_front_for_recording(ui.ctx());
-                self.start_recording();
+                self.start_recording(ui.ctx());
             }
 
             let pause_label = if is_paused { "Resume" } else { "Pause" };
@@ -457,16 +525,30 @@ impl WgoApp {
                 .add_enabled(is_recording, egui::Button::new("Stop"))
                 .clicked()
             {
-                self.stop_recording();
-                self.reset_window_level(ui.ctx());
+                self.stop_recording(ui.ctx());
             }
         });
 
-        ui.add_space(8.0);
-        ui.label(format!(
-            "Global shortcuts: {} = start/stop, {} = show window",
-            self.config.toggle_shortcut, self.config.show_window_shortcut
-        ));
+        if !compact {
+            ui.add_space(8.0);
+            ui.label(format!(
+                "Global shortcuts: {} = start/stop, {} = show window",
+                self.config.toggle_shortcut, self.config.show_window_shortcut
+            ));
+
+            let mic_test_active = self.is_monitoring();
+            let mic_test_label = if mic_test_active {
+                "Stop microphone test"
+            } else {
+                "Start microphone test"
+            };
+            if ui
+                .add_enabled(!is_recording, egui::Button::new(mic_test_label))
+                .clicked()
+            {
+                self.toggle_microphone_test();
+            }
+        }
     }
 
     fn latest_transcription_ui(&mut self, ui: &mut egui::Ui) {
@@ -513,7 +595,7 @@ impl WgoApp {
         );
 
         let wave_color = if is_recording {
-            egui::Color32::from_rgb(245, 72, 72)
+            egui::Color32::from_rgb(240, 150, 60)
         } else {
             egui::Color32::from_rgb(80, 210, 140)
         };
@@ -571,38 +653,45 @@ impl eframe::App for WgoApp {
         self.apply_ui_events();
         self.apply_shortcut_recording(ctx);
         self.sample_mic_graph_if_due();
+        let is_recording = self.is_recording();
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             self.mic_graph_ui(ui);
         });
 
-        egui::TopBottomPanel::bottom("status_bar")
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.label(&self.status_line);
-            });
+        if !is_recording {
+            egui::TopBottomPanel::bottom("status_bar")
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(&self.status_line);
+                });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.tabs_ui(ui);
+            if is_recording {
+                self.controls_ui(ui, true);
+            } else {
+                self.tabs_ui(ui);
 
-            match self.active_tab {
-                AppTab::Recorder => {
-                    egui::ScrollArea::vertical()
-                        .id_salt("recorder_tab_scroll")
-                        .show(ui, |ui| {
-                            self.controls_ui(ui);
-                            ui.separator();
-                            self.latest_transcription_ui(ui);
-                        });
-                }
-                AppTab::Settings => {
-                    egui::ScrollArea::vertical()
-                        .id_salt("settings_tab_scroll")
-                        .show(ui, |ui| {
-                            self.settings_ui(ui);
-                            ui.separator();
-                            self.latest_transcription_ui(ui);
-                        });
+                match self.active_tab {
+                    AppTab::Recorder => {
+                        egui::ScrollArea::vertical()
+                            .id_salt("recorder_tab_scroll")
+                            .show(ui, |ui| {
+                                self.controls_ui(ui, false);
+                                ui.separator();
+                                self.latest_transcription_ui(ui);
+                            });
+                    }
+                    AppTab::Settings => {
+                        egui::ScrollArea::vertical()
+                            .id_salt("settings_tab_scroll")
+                            .show(ui, |ui| {
+                                self.settings_ui(ui);
+                                ui.separator();
+                                self.latest_transcription_ui(ui);
+                            });
+                    }
                 }
             }
         });

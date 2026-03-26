@@ -9,6 +9,7 @@ use std::time::SystemTime;
 pub struct AudioRecorder {
     stream: Option<cpal::Stream>,
     is_recording: Arc<AtomicBool>,
+    is_monitoring: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     level_milli: Arc<AtomicU32>,
     writer: Option<Arc<Mutex<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
@@ -21,6 +22,7 @@ impl AudioRecorder {
         Self {
             stream: None,
             is_recording: Arc::new(AtomicBool::new(false)),
+            is_monitoring: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
             level_milli: Arc::new(AtomicU32::new(0)),
             writer: None,
@@ -67,6 +69,10 @@ impl AudioRecorder {
         self.is_paused.load(Ordering::SeqCst)
     }
 
+    pub fn is_monitoring(&self) -> bool {
+        self.is_monitoring.load(Ordering::SeqCst)
+    }
+
     pub fn input_level(&self) -> f32 {
         self.level_milli.load(Ordering::SeqCst) as f32 / 1000.0
     }
@@ -93,42 +99,31 @@ impl AudioRecorder {
         (sample as i32 - i16::MAX as i32 - 1) as i16
     }
 
-    pub fn start_recording(&mut self) -> Result<String, String> {
-        if self.is_recording.load(Ordering::SeqCst) {
-            return Err("Recording is already running".to_string());
-        }
-
+    fn get_input_device(&self) -> Result<cpal::Device, String> {
         let host = cpal::default_host();
 
-        let device = if let Some(ref device_name) = self.device_name {
-            let found_device =
-                host.input_devices().ok().and_then(|devices| {
-                    devices
-                        .filter_map(|d| {
-                            d.name().ok().and_then(|name| {
-                                if name == *device_name {
-                                    Some(d)
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .next()
-                });
+        if let Some(ref device_name) = self.device_name {
+            let found_device = host.input_devices().ok().and_then(|devices| {
+                devices
+                    .filter_map(|d| {
+                        d.name().ok().and_then(
+                            |name| {
+                                if name == *device_name { Some(d) } else { None }
+                            },
+                        )
+                    })
+                    .next()
+            });
 
             match found_device {
                 Some(device) => {
                     println!("Using selected device: {}", device_name);
-                    device
+                    Ok(device)
                 }
                 None => {
                     eprintln!("Selected device '{}' not found, using default", device_name);
-                    match host.default_input_device() {
-                        Some(d) => d,
-                        None => {
-                            return Err("No input device available".to_string());
-                        }
-                    }
+                    host.default_input_device()
+                        .ok_or_else(|| "No input device available".to_string())
                 }
             }
         } else {
@@ -137,13 +132,23 @@ impl AudioRecorder {
                     if let Ok(name) = device.name() {
                         println!("Using default input device: {}", name);
                     }
-                    device
+                    Ok(device)
                 }
-                None => {
-                    return Err("No input device available".to_string());
-                }
+                None => Err("No input device available".to_string()),
             }
-        };
+        }
+    }
+
+    pub fn start_recording(&mut self) -> Result<String, String> {
+        if self.is_recording.load(Ordering::SeqCst) {
+            return Err("Recording is already running".to_string());
+        }
+
+        if self.is_monitoring() {
+            self.stop_monitoring()?;
+        }
+
+        let device = self.get_input_device()?;
 
         let supported = match device.default_input_config() {
             Ok(config) => {
@@ -188,6 +193,7 @@ impl AudioRecorder {
 
         self.writer = Some(writer.clone());
         let is_recording = self.is_recording.clone();
+        let is_monitoring = self.is_monitoring.clone();
         let is_paused = self.is_paused.clone();
         let level_milli = self.level_milli.clone();
 
@@ -201,8 +207,10 @@ impl AudioRecorder {
                     .build_input_stream(
                         &stream_config,
                         move |data: &[f32], _| {
-                            if !is_recording_clone.load(Ordering::SeqCst)
-                                || is_paused_clone.load(Ordering::SeqCst)
+                            let recording = is_recording_clone.load(Ordering::SeqCst);
+                            let monitoring = is_monitoring.load(Ordering::SeqCst);
+                            if (!recording && !monitoring)
+                                || (recording && is_paused_clone.load(Ordering::SeqCst))
                             {
                                 return;
                             }
@@ -230,8 +238,10 @@ impl AudioRecorder {
                     .build_input_stream(
                         &stream_config,
                         move |data: &[i16], _| {
-                            if !is_recording_clone.load(Ordering::SeqCst)
-                                || is_paused_clone.load(Ordering::SeqCst)
+                            let recording = is_recording_clone.load(Ordering::SeqCst);
+                            let monitoring = is_monitoring.load(Ordering::SeqCst);
+                            if (!recording && !monitoring)
+                                || (recording && is_paused_clone.load(Ordering::SeqCst))
                             {
                                 return;
                             }
@@ -259,8 +269,10 @@ impl AudioRecorder {
                     .build_input_stream(
                         &stream_config,
                         move |data: &[u16], _| {
-                            if !is_recording_clone.load(Ordering::SeqCst)
-                                || is_paused_clone.load(Ordering::SeqCst)
+                            let recording = is_recording_clone.load(Ordering::SeqCst);
+                            let monitoring = is_monitoring.load(Ordering::SeqCst);
+                            if (!recording && !monitoring)
+                                || (recording && is_paused_clone.load(Ordering::SeqCst))
                             {
                                 return;
                             }
@@ -288,12 +300,157 @@ impl AudioRecorder {
         }
 
         self.is_recording.store(true, Ordering::SeqCst);
+        self.is_monitoring.store(false, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
         self.stream = Some(stream);
 
         println!("Recording started: {}", filename);
         println!("Speak now...");
         Ok(file_path.to_string_lossy().to_string())
+    }
+
+    pub fn start_monitoring(&mut self) -> Result<(), String> {
+        if self.is_recording() {
+            return Err("Cannot start microphone test while recording".to_string());
+        }
+
+        if self.is_monitoring() {
+            return Ok(());
+        }
+
+        let device = self.get_input_device()?;
+
+        let supported = device
+            .default_input_config()
+            .map_err(|err| format!("Error getting default input config: {err}"))?;
+        let stream_config = supported.config();
+        let sample_format = supported.sample_format();
+
+        let is_recording = self.is_recording.clone();
+        let is_monitoring = self.is_monitoring.clone();
+        let is_paused = self.is_paused.clone();
+        let level_milli = self.level_milli.clone();
+
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => {
+                let is_recording_clone = is_recording.clone();
+                let is_monitoring_clone = is_monitoring.clone();
+                let is_paused_clone = is_paused.clone();
+                let level_milli_clone = level_milli.clone();
+                device
+                    .build_input_stream(
+                        &stream_config,
+                        move |data: &[f32], _| {
+                            let recording = is_recording_clone.load(Ordering::SeqCst);
+                            let monitoring = is_monitoring_clone.load(Ordering::SeqCst);
+                            if (!recording && !monitoring)
+                                || (recording && is_paused_clone.load(Ordering::SeqCst))
+                            {
+                                return;
+                            }
+
+                            let mut peak = 0.0f32;
+                            for &sample in data {
+                                peak = peak.max(sample.abs());
+                            }
+                            let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
+                            level_milli_clone.store(scaled, Ordering::SeqCst);
+                        },
+                        move |err| eprintln!("Stream error: {}", err),
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?
+            }
+            cpal::SampleFormat::I16 => {
+                let is_recording_clone = is_recording.clone();
+                let is_monitoring_clone = is_monitoring.clone();
+                let is_paused_clone = is_paused.clone();
+                let level_milli_clone = level_milli.clone();
+                device
+                    .build_input_stream(
+                        &stream_config,
+                        move |data: &[i16], _| {
+                            let recording = is_recording_clone.load(Ordering::SeqCst);
+                            let monitoring = is_monitoring_clone.load(Ordering::SeqCst);
+                            if (!recording && !monitoring)
+                                || (recording && is_paused_clone.load(Ordering::SeqCst))
+                            {
+                                return;
+                            }
+
+                            let mut peak = 0.0f32;
+                            for &sample in data {
+                                peak = peak.max((sample as f32 / i16::MAX as f32).abs());
+                            }
+                            let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
+                            level_milli_clone.store(scaled, Ordering::SeqCst);
+                        },
+                        move |err| eprintln!("Stream error: {}", err),
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?
+            }
+            cpal::SampleFormat::U16 => {
+                let is_recording_clone = is_recording.clone();
+                let is_monitoring_clone = is_monitoring.clone();
+                let is_paused_clone = is_paused.clone();
+                let level_milli_clone = level_milli.clone();
+                device
+                    .build_input_stream(
+                        &stream_config,
+                        move |data: &[u16], _| {
+                            let recording = is_recording_clone.load(Ordering::SeqCst);
+                            let monitoring = is_monitoring_clone.load(Ordering::SeqCst);
+                            if (!recording && !monitoring)
+                                || (recording && is_paused_clone.load(Ordering::SeqCst))
+                            {
+                                return;
+                            }
+
+                            let mut peak = 0.0f32;
+                            for &sample in data {
+                                let i16_sample = Self::i16_from_u16(sample);
+                                peak = peak.max((i16_sample as f32 / i16::MAX as f32).abs());
+                            }
+                            let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
+                            level_milli_clone.store(scaled, Ordering::SeqCst);
+                        },
+                        move |err| eprintln!("Stream error: {}", err),
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?
+            }
+            other => return Err(format!("Unsupported sample format: {other:?}")),
+        };
+
+        stream
+            .play()
+            .map_err(|err| format!("Error starting stream: {err}"))?;
+
+        self.stream = Some(stream);
+        self.writer = None;
+        self.current_filename = None;
+        self.is_paused.store(false, Ordering::SeqCst);
+        self.is_recording.store(false, Ordering::SeqCst);
+        self.is_monitoring.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn stop_monitoring(&mut self) -> Result<(), String> {
+        if !self.is_monitoring() {
+            return Ok(());
+        }
+
+        self.is_monitoring.store(false, Ordering::SeqCst);
+        self.is_paused.store(false, Ordering::SeqCst);
+        self.level_milli.store(0, Ordering::SeqCst);
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        self.stream = None;
+        self.writer = None;
+        self.current_filename = None;
+        Ok(())
     }
 
     pub fn pause_recording(&mut self) -> Result<(), String> {
@@ -318,6 +475,7 @@ impl AudioRecorder {
         }
 
         self.is_recording.store(false, Ordering::SeqCst);
+        self.is_monitoring.store(false, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
         self.level_milli.store(0, Ordering::SeqCst);
 

@@ -10,6 +10,7 @@ pub struct AppConfig {
     pub markdown_pattern: String,
     pub toggle_shortcut: String,
     pub show_window_shortcut: String,
+    pub minimize_on_stop: bool,
 }
 
 impl Default for AppConfig {
@@ -27,6 +28,7 @@ impl Default for AppConfig {
             markdown_pattern: "transcription_{date}_{time}.md".to_string(),
             toggle_shortcut: "Alt+Space".to_string(),
             show_window_shortcut: "Alt+H".to_string(),
+            minimize_on_stop: false,
         }
     }
 }
@@ -58,6 +60,7 @@ impl AppConfig {
                 if !cfg.show_window_shortcut.trim().is_empty() {
                     merged.show_window_shortcut = cfg.show_window_shortcut;
                 }
+                merged.minimize_on_stop = cfg.minimize_on_stop;
                 return merged;
             }
         }
