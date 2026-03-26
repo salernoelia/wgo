@@ -406,19 +406,19 @@ pub fn start_global_hotkeys(
 
     #[cfg(not(target_os = "macos"))]
     {
-            let detector_clone = detector.clone();
-            std::thread::spawn(move || {
-                let detector_for_grab = detector_clone.clone();
-                let sender_for_grab = sender.clone();
-                let grab_result = grab(move |event: Event| {
-                    if let Some(cmd) = detector_for_grab.handle_event(event.clone()) {
-                        let _ = sender_for_grab.send(cmd);
-                        return None;
-                    }
-                    Some(event)
-                });
+        let detector_clone = detector.clone();
+        std::thread::spawn(move || {
+            let detector_for_grab = detector_clone.clone();
+            let sender_for_grab = sender.clone();
+            let grab_result = grab(move |event: Event| {
+                if let Some(cmd) = detector_for_grab.handle_event(event.clone()) {
+                    let _ = sender_for_grab.send(cmd);
+                    return None;
+                }
+                Some(event)
+            });
 
-                if let Err(err) = grab_result {
+            if let Err(err) = grab_result {
                 eprintln!(
                     "Global event grab unavailable, falling back to passive listener: {:?}",
                     err
