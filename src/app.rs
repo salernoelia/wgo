@@ -35,7 +35,6 @@ pub struct WgoApp {
     status_line: String,
     last_transcription: String,
     last_failed_audio_path: Option<String>,
-    microphone_access_checked: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,30 +94,6 @@ impl WgoApp {
             status_line: "Ready".to_string(),
             last_transcription: String::new(),
             last_failed_audio_path: None,
-            microphone_access_checked: false,
-        }
-    }
-
-    fn ensure_microphone_access(&mut self) -> Result<(), String> {
-        if self.microphone_access_checked {
-            return Ok(());
-        }
-
-        let preferred = self.selected_microphone.as_deref();
-        crate::microphone_permission::request_microphone_access(preferred)?;
-        self.microphone_access_checked = true;
-        Ok(())
-    }
-
-    fn request_microphone_access_again(&mut self) {
-        self.microphone_access_checked = false;
-        match self.ensure_microphone_access() {
-            Ok(()) => {
-                self.status_line = "Microphone permission check completed".to_string();
-            }
-            Err(err) => {
-                self.status_line = err;
-            }
         }
     }
 
@@ -344,16 +319,11 @@ impl WgoApp {
     }
 
     fn save_settings(&mut self) {
-        let previous_microphone = self.config.microphone_name.clone();
         self.config.microphone_name = self.selected_microphone.clone();
         self.config.toggle_shortcut = self.pending_toggle_shortcut.clone();
         self.config.show_window_shortcut = self.pending_show_shortcut.clone();
         if let Ok(mut rec) = self.recorder.lock() {
             rec.set_device_name(self.config.microphone_name.clone());
-        }
-
-        if previous_microphone != self.config.microphone_name {
-            self.microphone_access_checked = false;
         }
 
         match self.config.save() {
@@ -377,11 +347,6 @@ impl WgoApp {
             return;
         }
 
-        if let Err(err) = self.ensure_microphone_access() {
-            self.status_line = err;
-            return;
-        }
-
         let start_result = match self.recorder.lock() {
             Ok(mut recorder) => recorder.start_recording(),
             Err(_) => {
@@ -402,13 +367,6 @@ impl WgoApp {
     }
 
     fn toggle_microphone_test(&mut self) {
-        if !self.is_monitoring() {
-            if let Err(err) = self.ensure_microphone_access() {
-                self.status_line = err;
-                return;
-            }
-        }
-
         let result = match self.recorder.lock() {
             Ok(mut recorder) => {
                 if recorder.is_monitoring() {
@@ -532,11 +490,6 @@ impl WgoApp {
                     ui.selectable_value(&mut self.selected_microphone, Some(mic.clone()), mic);
                 }
             });
-
-        ui.add_space(8.0);
-        if ui.button("Request microphone permission again").clicked() {
-            self.request_microphone_access_again();
-        }
 
         ui.add_space(8.0);
         ui.label("Markdown output folder");
