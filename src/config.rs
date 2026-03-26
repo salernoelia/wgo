@@ -1,36 +1,67 @@
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{self, Write};
+use std::path::PathBuf;
 
-pub fn ensure_config_exists() {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let config_path = exe_dir.join("config.json");
-    if !config_path.exists() {
-        println!("No config.json found. Please enter your Groq API key:");
-        print!("Groq API key: ");
-        io::stdout().flush().unwrap();
-        let mut api_key = String::new();
-        if io::stdin().read_line(&mut api_key).is_ok() {
-            let api_key = api_key.trim();
-            if !api_key.is_empty() {
-                let config = json!({"groq_api_key": api_key});
-                if let Ok(content) = serde_json::to_string_pretty(&config) {
-                    if let Err(e) = fs::write(&config_path, content) {
-                        eprintln!("Failed to write config.json: {}", e);
-                    } else {
-                        println!("config.json created successfully.");
-                    }
-                }
-            } else {
-                eprintln!("API key cannot be empty. Please restart and provide a valid key.");
-                std::process::exit(1);
-            }
-        } else {
-            eprintln!("Failed to read input. Please restart and provide a valid key.");
-            std::process::exit(1);
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub groq_api_key: String,
+    pub microphone_name: Option<String>,
+    pub markdown_dir: String,
+    pub markdown_pattern: String,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        let default_md_dir = dirs::document_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join("wgo-transcriptions")
+            .to_string_lossy()
+            .to_string();
+
+        Self {
+            groq_api_key: String::new(),
+            microphone_name: None,
+            markdown_dir: default_md_dir,
+            markdown_pattern: "transcription_{date}_{time}.md".to_string(),
         }
+    }
+}
+
+impl AppConfig {
+    pub fn app_data_dir() -> PathBuf {
+        let base = dirs::data_local_dir()
+            .or_else(dirs::data_dir)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        base.join("wgo")
+    }
+
+    pub fn config_path() -> PathBuf {
+        Self::app_data_dir().join("config.json")
+    }
+
+    pub fn load() -> Self {
+        let path = Self::config_path();
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str::<Self>(&content) {
+                return cfg;
+            }
+        }
+
+        let cfg = Self::default();
+        let _ = cfg.save();
+        cfg
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {e}"))?;
+        }
+
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize config: {e}"))?;
+
+        fs::write(path, content).map_err(|e| format!("Failed to write config.json: {e}"))
     }
 }

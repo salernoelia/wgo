@@ -1,4 +1,4 @@
-use dotenv::dotenv;
+use crate::config::AppConfig;
 use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::Client;
 use serde_json::Value;
@@ -38,19 +38,13 @@ fn get_recordings_dir() -> PathBuf {
 }
 
 pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
-    dotenv().ok();
-
-    let config_path = get_exe_dir().join("config.json");
-    let config_file = File::open(&config_path)
-        .map_err(|e| format!("Failed to open config.json at {:?}: {}", config_path, e))?;
-    let config: Value = serde_json::from_reader(config_file)?;
-    let api_key = config["groq_api_key"]
-        .as_str()
-        .ok_or("groq_api_key not found or not a string in config.json")?;
+    let config = AppConfig::load();
+    let api_key = config.groq_api_key.trim();
 
     if api_key.is_empty() {
-        return Err("groq_api_key is empty in config.json".into());
+        return Err("Groq API key is empty. Set it in the app settings.".into());
     }
+
     let url = "https://api.groq.com/openai/v1/audio/transcriptions";
 
     let audio_file_path = if Path::new(file_path).is_absolute() {
@@ -71,8 +65,13 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
 
+    let file_name = audio_file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_path.to_owned());
+
     let file_part = Part::bytes(buffer)
-        .file_name(file_path.to_owned())
+        .file_name(file_name)
         .mime_str("audio/wav")?;
 
     let form = Form::new()

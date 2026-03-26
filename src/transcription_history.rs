@@ -79,7 +79,4 @@ impl TranscriptionHistory {
         self.save();
     }
 
-    pub fn list_records(&self) -> &[TranscriptionRecord] {
-        &self.records
-    }
 }

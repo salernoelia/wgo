@@ -1,29 +1,35 @@
+mod app;
 mod audio_recorder;
 mod config;
 mod groq_request;
-mod menu;
 mod shortcut_detector;
 mod transcription_history;
 mod utils;
 
-use audio_recorder::AudioRecorder;
-
-use rdev::listen;
-use shortcut_detector::ShortcutDetector;
-use std::sync::{Arc, Mutex};
-use transcription_history::{TranscriptionHistory, TranscriptionRecord};
+use app::WgoApp;
+use eframe::egui;
+use shortcut_detector::start_global_hotkeys;
+use std::sync::mpsc;
 
 fn main() {
-    config::ensure_config_exists();
-    let detector = Arc::new(ShortcutDetector::new());
-    let recorder = Arc::new(Mutex::new(AudioRecorder::new()));
+    let (hotkey_tx, hotkey_rx) = mpsc::channel();
+    let _hotkey_runtime = start_global_hotkeys(hotkey_tx);
 
-    println!("Listening for key events:");
-    println!("  Alt+Space: Toggle recording");
-    println!("  Alt+H: Show menu");
-    println!("Press Ctrl+C to exit");
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("wgo")
+            .with_inner_size([960.0, 580.0])
+            .with_min_inner_size([760.0, 420.0]),
+        ..Default::default()
+    };
 
-    if let Err(error) = listen(detector.create_callback(recorder)) {
-        println!("Error: {:?}", error);
+    let run_result = eframe::run_native(
+        "wgo",
+        options,
+        Box::new(move |_cc| Ok(Box::new(WgoApp::new(hotkey_rx)))),
+    );
+
+    if let Err(err) = run_result {
+        eprintln!("Failed to start GUI: {err}");
     }
 }
