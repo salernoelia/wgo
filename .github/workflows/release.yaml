@@ -62,6 +62,7 @@ jobs:
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
           cp target/release/wgo "$APP/Contents/MacOS/wgo"
+          cp assets/icon.icns "$APP/Contents/Resources/icon.icns"
           cat > "$APP/Contents/Info.plist" << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -73,6 +74,7 @@ jobs:
             <key>CFBundleIdentifier</key>    <string>com.yourname.wgo</string>
             <key>CFBundleVersion</key>       <string>1.0</string>
             <key>CFBundlePackageType</key>   <string>APPL</string>
+            <key>CFBundleIconFile</key>      <string>icon</string>
           </dict>
           </plist>
           EOF
@@ -82,9 +84,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cp target/release/wgo wgo-linux
 
-      - name: Rename binary (Windows)
+      - name: Build (Windows)
         if: matrix.os == 'windows-latest'
-        run: cp target/release/wgo.exe wgo-windows.exe
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: cargo build --release
         shell: bash
 
       - name: Upload release asset
