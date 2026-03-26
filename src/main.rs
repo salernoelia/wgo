@@ -1,29 +1,51 @@
+mod app;
 mod audio_recorder;
 mod config;
 mod groq_request;
-mod menu;
+mod icon;
 mod shortcut_detector;
 mod transcription_history;
 mod utils;
 
-use audio_recorder::AudioRecorder;
-
-use rdev::listen;
-use shortcut_detector::ShortcutDetector;
-use std::sync::{Arc, Mutex};
-use transcription_history::{TranscriptionHistory, TranscriptionRecord};
+use app::WgoApp;
+use config::AppConfig;
+use eframe::egui;
+use icon::load_app_icon;
+use shortcut_detector::{start_global_hotkeys, HotkeyBindings};
+use std::sync::mpsc;
 
 fn main() {
-    config::ensure_config_exists();
-    let detector = Arc::new(ShortcutDetector::new());
-    let recorder = Arc::new(Mutex::new(AudioRecorder::new()));
+    let config = AppConfig::load();
+    let (hotkey_tx, hotkey_rx) = mpsc::channel();
+    let hotkey_runtime = start_global_hotkeys(
+        hotkey_tx,
+        HotkeyBindings::new(
+            config.toggle_shortcut.clone(),
+            config.show_window_shortcut.clone(),
+        ),
+    );
 
-    println!("Listening for key events:");
-    println!("  Alt+Space: Toggle recording");
-    println!("  Alt+H: Show menu");
-    println!("Press Ctrl+C to exit");
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("wgo")
+        .with_inner_size([620.0, 480.0])
+        .with_min_inner_size([620.0, 480.0]);
 
-    if let Err(error) = listen(detector.create_callback(recorder)) {
-        println!("Error: {:?}", error);
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+
+    let run_result = eframe::run_native(
+        "wgo",
+        options,
+        Box::new(move |_cc| Ok(Box::new(WgoApp::new(hotkey_rx, hotkey_runtime)))),
+    );
+
+    if let Err(err) = run_result {
+        eprintln!("Failed to start GUI: {err}");
     }
 }

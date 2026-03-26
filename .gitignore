@@ -4,3 +4,7 @@
 transcription_history.json
 .env
 .DS_Store
+
+cargo.lock
+
+.DS_Store

@@ -1,4 +1,4 @@
-use dotenv::dotenv;
+use crate::config::AppConfig;
 use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::Client;
 use serde_json::Value;
@@ -14,65 +14,52 @@ fn get_exe_dir() -> PathBuf {
 }
 
 fn get_recordings_dir() -> PathBuf {
-    let data_dir = if cfg!(target_os = "windows") {
-        std::env::var("APPDATA")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-            .join("wgo")
-    } else {
-        // Linux/macOS: use XDG_DATA_HOME or ~/.local/share
-        std::env::var("XDG_DATA_HOME")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".local").join("share"))
-            })
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-            .join("wgo")
-    };
-
-    data_dir.join("recordings")
+    AppConfig::app_data_dir().join("recordings")
 }
 
-pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
-    dotenv().ok();
+fn resolve_audio_file_path(file_path: &str) -> PathBuf {
+    resolve_audio_file_path_with(file_path, &get_recordings_dir(), &get_exe_dir())
+}
 
-    let config_path = get_exe_dir().join("config.json");
-    let config_file = File::open(&config_path)
-        .map_err(|e| format!("Failed to open config.json at {:?}: {}", config_path, e))?;
-    let config: Value = serde_json::from_reader(config_file)?;
-    let api_key = config["groq_api_key"]
-        .as_str()
-        .ok_or("groq_api_key not found or not a string in config.json")?;
-
-    if api_key.is_empty() {
-        return Err("groq_api_key is empty in config.json".into());
-    }
-    let url = "https://api.groq.com/openai/v1/audio/transcriptions";
-
-    let audio_file_path = if Path::new(file_path).is_absolute() {
+fn resolve_audio_file_path_with(file_path: &str, recordings_dir: &Path, exe_dir: &Path) -> PathBuf {
+    if Path::new(file_path).is_absolute() {
         PathBuf::from(file_path)
     } else if file_path.contains('/') || file_path.contains('\\') {
         PathBuf::from(file_path)
     } else {
-        let recordings_path = get_recordings_dir().join(file_path);
+        let recordings_path = recordings_dir.join(file_path);
         if recordings_path.exists() {
             recordings_path
         } else {
-            get_exe_dir().join(file_path)
+            exe_dir.join(file_path)
         }
-    };
+    }
+}
+
+pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let config = AppConfig::load();
+    let api_key = config.groq_api_key.trim();
+
+    if api_key.is_empty() {
+        return Err("Groq API key is empty. Set it in the app settings.".into());
+    }
+
+    let url = "https://api.groq.com/openai/v1/audio/transcriptions";
+
+    let audio_file_path = resolve_audio_file_path(file_path);
 
     let mut file = File::open(&audio_file_path)
         .map_err(|e| format!("Failed to open audio file at {:?}: {}", audio_file_path, e))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
 
+    let file_name = audio_file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_path.to_owned());
+
     let file_part = Part::bytes(buffer)
-        .file_name(file_path.to_owned())
+        .file_name(file_name)
         .mime_str("audio/wav")?;
 
     let form = Form::new()
@@ -100,5 +87,42 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
             .text()
             .unwrap_or_else(|_| "Unable to read response body".to_string());
         Err(format!("API request failed with status {}: {}", status, error_body).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolve_audio_file_path_prefers_recordings_for_plain_filename_when_present() {
+        let recordings = tempdir().expect("recordings dir");
+        let exe = tempdir().expect("exe dir");
+        let filename = "x.wav";
+        std::fs::write(recordings.path().join(filename), "audio").expect("seed file");
+
+        let resolved = resolve_audio_file_path_with(filename, recordings.path(), exe.path());
+        assert_eq!(resolved, recordings.path().join(filename));
+    }
+
+    #[test]
+    fn resolve_audio_file_path_falls_back_to_exe_for_plain_filename_when_missing() {
+        let recordings = tempdir().expect("recordings dir");
+        let exe = tempdir().expect("exe dir");
+        let filename = "missing.wav";
+
+        let resolved = resolve_audio_file_path_with(filename, recordings.path(), exe.path());
+        assert_eq!(resolved, exe.path().join(filename));
+    }
+
+    #[test]
+    fn resolve_audio_file_path_keeps_relative_paths_with_separator() {
+        let recordings = tempdir().expect("recordings dir");
+        let exe = tempdir().expect("exe dir");
+        let relative = "nested/file.wav";
+
+        let resolved = resolve_audio_file_path_with(relative, recordings.path(), exe.path());
+        assert_eq!(resolved, PathBuf::from(relative));
     }
 }
