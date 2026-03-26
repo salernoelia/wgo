@@ -90,6 +90,11 @@ jobs:
           CARGO_INCREMENTAL: "0"
         run: cargo build --release
         shell: bash
+        
+      - name: Rename binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cp target/release/wgo.exe wgo-windows.exe
+        shell: bash
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2

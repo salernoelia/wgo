@@ -18,7 +18,9 @@ A lightweight, cross-platform voice transcription tool with a GUI, global hotkey
 
 ## Installation
 
-### Quick Install (Recommended)
+Check out the releases to get a packed executable for your system.
+
+### Quick Install Binary
 
 ```bash
 cargo install --git https://github.com/salernoelia/wgo
