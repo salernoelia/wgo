@@ -3,7 +3,6 @@ mod audio_recorder;
 mod config;
 mod groq_request;
 mod icon;
-mod microphone_permission;
 mod shortcut_detector;
 mod transcription_history;
 mod utils;

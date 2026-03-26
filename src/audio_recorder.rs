@@ -6,6 +6,31 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+fn normalize_input_error(context: &str, err: impl std::fmt::Display) -> String {
+    let details = err.to_string();
+    let lower = details.to_ascii_lowercase();
+
+    let permission_related = [
+        "permission",
+        "not authorized",
+        "not permitted",
+        "access denied",
+        "operation not permitted",
+        "unauthorized",
+        "forbidden",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    if permission_related {
+        return format!(
+            "Microphone access is blocked. Enable microphone access for this app in system privacy settings, then retry. {context}. Details: {details}"
+        );
+    }
+
+    format!("{context}. Details: {details}")
+}
+
 pub struct AudioRecorder {
     stream: Option<cpal::Stream>,
     is_recording: Arc<AtomicBool>,
@@ -35,7 +60,7 @@ impl AudioRecorder {
         let host = cpal::default_host();
         let devices: Vec<_> = host
             .input_devices()
-            .map_err(|e| format!("Failed to get input devices: {}", e))?
+            .map_err(|e| normalize_input_error("Failed to enumerate input devices", e))?
             .collect();
 
         if devices.is_empty() {
@@ -164,7 +189,10 @@ impl AudioRecorder {
                 config
             }
             Err(err) => {
-                return Err(format!("Error getting default input config: {err}"));
+                return Err(normalize_input_error(
+                    "Failed to get default microphone configuration",
+                    err,
+                ));
             }
         };
 
@@ -230,7 +258,9 @@ impl AudioRecorder {
                         move |err| eprintln!("Stream error: {}", err),
                         None,
                     )
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| {
+                        normalize_input_error("Failed to open microphone input stream", e)
+                    })?
             }
             cpal::SampleFormat::I16 => {
                 let writer_clone = writer.clone();
@@ -261,7 +291,9 @@ impl AudioRecorder {
                         move |err| eprintln!("Stream error: {}", err),
                         None,
                     )
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| {
+                        normalize_input_error("Failed to open microphone input stream", e)
+                    })?
             }
             cpal::SampleFormat::U16 => {
                 let writer_clone = writer.clone();
@@ -293,13 +325,18 @@ impl AudioRecorder {
                         move |err| eprintln!("Stream error: {}", err),
                         None,
                     )
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| {
+                        normalize_input_error("Failed to open microphone input stream", e)
+                    })?
             }
             other => return Err(format!("Unsupported sample format: {other:?}")),
         };
 
         if let Err(err) = stream.play() {
-            return Err(format!("Error starting stream: {err}"));
+            return Err(normalize_input_error(
+                "Failed to start microphone stream",
+                err,
+            ));
         }
 
         self.is_recording.store(true, Ordering::SeqCst);
@@ -323,9 +360,9 @@ impl AudioRecorder {
 
         let device = self.get_input_device()?;
 
-        let supported = device
-            .default_input_config()
-            .map_err(|err| format!("Error getting default input config: {err}"))?;
+        let supported = device.default_input_config().map_err(|err| {
+            normalize_input_error("Failed to get default microphone configuration", err)
+        })?;
         let stream_config = supported.config();
         let sample_format = supported.sample_format();
 
@@ -362,7 +399,9 @@ impl AudioRecorder {
                         move |err| eprintln!("Stream error: {}", err),
                         None,
                     )
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| {
+                        normalize_input_error("Failed to open microphone input stream", e)
+                    })?
             }
             cpal::SampleFormat::I16 => {
                 let is_recording_clone = is_recording.clone();
@@ -391,7 +430,9 @@ impl AudioRecorder {
                         move |err| eprintln!("Stream error: {}", err),
                         None,
                     )
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| {
+                        normalize_input_error("Failed to open microphone input stream", e)
+                    })?
             }
             cpal::SampleFormat::U16 => {
                 let is_recording_clone = is_recording.clone();
@@ -421,14 +462,16 @@ impl AudioRecorder {
                         move |err| eprintln!("Stream error: {}", err),
                         None,
                     )
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| {
+                        normalize_input_error("Failed to open microphone input stream", e)
+                    })?
             }
             other => return Err(format!("Unsupported sample format: {other:?}")),
         };
 
         stream
             .play()
-            .map_err(|err| format!("Error starting stream: {err}"))?;
+            .map_err(|err| normalize_input_error("Failed to start microphone stream", err))?;
 
         self.stream = Some(stream);
         self.writer = None;
