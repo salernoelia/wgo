@@ -14,25 +14,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         include:
           - os: ubuntu-latest
             artifact_name: wgo-linux
-            build_cmd: cargo build --release
             binary_path: target/release/wgo
+
           - os: macos-latest
-            artifact_name: wgo-macos
-            build_cmd: cargo build --release
+            artifact_name: wgo-macos.app.tar.gz
             binary_path: target/release/wgo
+
           - os: windows-latest
             artifact_name: wgo-windows.exe
-            build_cmd: cargo build --release
             binary_path: target/release/wgo.exe
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
 
-      - name: Install ALSA and X11 (Linux only)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
@@ -41,6 +39,7 @@ jobs:
             libasound2-dev \
             libx11-dev \
             libxi-dev \
+            libxtst-dev \
             libxinerama-dev \
             libxcursor-dev \
             libxrandr-dev \
@@ -49,22 +48,47 @@ jobs:
             libgl1-mesa-dev \
             libssl-dev
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: ${{ matrix.build_cmd }}
+      - name: Build
+        run: cargo build --release
 
-      - name: Rename binary for upload
-        run: mv ${{ matrix.binary_path }} ${{ matrix.artifact_name }}
+      - name: Bundle macOS .app
+        if: matrix.os == 'macos-latest'
+        run: |
+          APP=wgo.app
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources"
+          cp target/release/wgo "$APP/Contents/MacOS/wgo"
+          cat > "$APP/Contents/Info.plist" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>          <string>wgo</string>
+            <key>CFBundleExecutable</key>    <string>wgo</string>
+            <key>CFBundleIdentifier</key>    <string>com.yourname.wgo</string>
+            <key>CFBundleVersion</key>       <string>1.0</string>
+            <key>CFBundlePackageType</key>   <string>APPL</string>
+          </dict>
+          </plist>
+          EOF
+          tar -czf wgo-macos.app.tar.gz "$APP"
+
+      - name: Rename binary (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: cp target/release/wgo wgo-linux
+
+      - name: Rename binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cp target/release/wgo.exe wgo-windows.exe
         shell: bash
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           fail_on_unmatched_files: true
           files: ${{ matrix.artifact_name }}

@@ -873,7 +873,7 @@ fn save_transcription_markdown(
     }
 
     let body = format!(
-        "# Transcription\n\n- Date: {}\n- Audio file: {}\n\n## Text\n\n{}\n",
+        "---\nDate: {}\nAudio file: {}\nTags: \n- transcription \n---\n{}\n",
         now.to_rfc3339(),
         audio_path,
         transcription
