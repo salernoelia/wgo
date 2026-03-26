@@ -2,6 +2,7 @@ mod app;
 mod audio_recorder;
 mod config;
 mod groq_request;
+mod icon;
 mod shortcut_detector;
 mod transcription_history;
 mod utils;
@@ -9,6 +10,7 @@ mod utils;
 use app::WgoApp;
 use config::AppConfig;
 use eframe::egui;
+use icon::load_app_icon;
 use shortcut_detector::{start_global_hotkeys, HotkeyBindings};
 use std::sync::mpsc;
 
@@ -23,11 +25,17 @@ fn main() {
         ),
     );
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("wgo")
+        .with_inner_size([620.0, 480.0])
+        .with_min_inner_size([620.0, 480.0]);
+
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("wgo")
-            .with_inner_size([620.0, 480.0])
-            .with_min_inner_size([620.0, 480.0]),
+        viewport,
         ..Default::default()
     };
 

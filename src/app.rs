@@ -101,37 +101,39 @@ impl WgoApp {
         let cfg = self.config.clone();
         let ui_tx = self.ui_event_tx.clone();
 
-        std::thread::spawn(move || match crate::groq_request::transcribe_audio(&audio_path) {
-            Ok(text) => {
-                crate::utils::copy_to_clipboard(&text);
-                AudioRecorder::save_transcription(&audio_path, &text);
+        std::thread::spawn(
+            move || match crate::groq_request::transcribe_audio(&audio_path) {
+                Ok(text) => {
+                    crate::utils::copy_to_clipboard(&text);
+                    AudioRecorder::save_transcription(&audio_path, &text);
 
-                let md_path = match save_transcription_markdown(&cfg, &audio_path, &text) {
-                    Ok(path) => Some(path),
-                    Err(err) => {
-                        let _ = ui_tx.send(UiEvent::TranscriptionFailed {
-                            audio_path: audio_path.clone(),
-                            error: format!(
-                                "Transcription succeeded but markdown save failed: {err}"
-                            ),
-                        });
-                        None
-                    }
-                };
+                    let md_path = match save_transcription_markdown(&cfg, &audio_path, &text) {
+                        Ok(path) => Some(path),
+                        Err(err) => {
+                            let _ = ui_tx.send(UiEvent::TranscriptionFailed {
+                                audio_path: audio_path.clone(),
+                                error: format!(
+                                    "Transcription succeeded but markdown save failed: {err}"
+                                ),
+                            });
+                            None
+                        }
+                    };
 
-                let _ = ui_tx.send(UiEvent::TranscriptionReady {
-                    audio_path,
-                    text,
-                    markdown_path: md_path,
-                });
-            }
-            Err(err) => {
-                let _ = ui_tx.send(UiEvent::TranscriptionFailed {
-                    audio_path,
-                    error: format!("Transcription error: {err}"),
-                });
-            }
-        });
+                    let _ = ui_tx.send(UiEvent::TranscriptionReady {
+                        audio_path,
+                        text,
+                        markdown_path: md_path,
+                    });
+                }
+                Err(err) => {
+                    let _ = ui_tx.send(UiEvent::TranscriptionFailed {
+                        audio_path,
+                        error: format!("Transcription error: {err}"),
+                    });
+                }
+            },
+        );
     }
 
     fn sample_mic_graph_if_due(&mut self) {
@@ -558,8 +560,8 @@ impl WgoApp {
         ui.horizontal(|ui| {
             let mut start_response = ui.add_enabled(can_start, egui::Button::new("Start"));
             if !has_api_key {
-                start_response =
-                    start_response.on_disabled_hover_text("Set your Groq API key in Settings first.");
+                start_response = start_response
+                    .on_disabled_hover_text("Set your Groq API key in Settings first.");
             }
             if start_response.clicked() {
                 self.start_recording(ui.ctx());
@@ -927,10 +929,7 @@ mod tests {
         cfg.markdown_pattern = "bad:name*pattern".to_string();
 
         let path = save_transcription_markdown(&cfg, "audio.wav", "hello").expect("save");
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .expect("filename");
+        let file_name = path.file_name().and_then(|n| n.to_str()).expect("filename");
 
         assert!(file_name.ends_with(".md"));
         assert!(!file_name.contains(':'));

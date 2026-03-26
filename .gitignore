@@ -7,3 +7,4 @@ transcription_history.json
 
 cargo.lock
 
+.DS_Store
