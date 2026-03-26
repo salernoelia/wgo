@@ -363,6 +363,8 @@ pub fn start_global_hotkeys(
                 &initial,
             );
 
+            let event_rx = GlobalHotKeyEvent::receiver();
+
             loop {
                 while let Ok(msg) = control_rx.try_recv() {
                     match msg {
@@ -376,9 +378,7 @@ pub fn start_global_hotkeys(
                     }
                 }
 
-                if let Ok(event) =
-                    GlobalHotKeyEvent::receiver().recv_timeout(Duration::from_millis(250))
-                {
+                while let Ok(event) = event_rx.try_recv() {
                     if event.state != HotKeyState::Pressed {
                         continue;
                     }
@@ -395,6 +395,8 @@ pub fn start_global_hotkeys(
                         let _ = sender.send(cmd);
                     }
                 }
+
+                std::thread::sleep(Duration::from_millis(10));
             }
         });
 

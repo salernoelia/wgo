@@ -3,6 +3,10 @@
 
 A lightweight, cross-platform voice transcription tool with a GUI, global hotkey support, microphone selection, and real-time transcription using Groq's Whisper API.
 
+![](/images/demo_1.png)
+![](/images/demo_2.png)
+![](/images/demo_3.png)
+
 
 ## Features
 

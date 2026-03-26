@@ -388,6 +388,47 @@ impl WgoApp {
         }
     }
 
+    fn request_microphone_permission(&mut self) {
+        if self.is_recording() {
+            self.status_line =
+                "Stop the active recording before requesting microphone permissions.".to_string();
+            return;
+        }
+
+        let result = match self.recorder.lock() {
+            Ok(mut recorder) => match recorder.start_monitoring() {
+                Ok(()) => recorder.stop_monitoring(),
+                Err(err) => Err(err),
+            },
+            Err(_) => {
+                self.status_line = "Failed to lock recorder".to_string();
+                return;
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                self.status_line = "Microphone permission request was triggered. If no prompt appeared, open system microphone settings and grant access for this app.".to_string();
+            }
+            Err(err) => {
+                self.status_line = format!(
+                    "{err} | Use 'Open microphone settings' to grant permission manually."
+                );
+            }
+        }
+    }
+
+    fn open_microphone_settings(&mut self) {
+        match crate::utils::open_microphone_permissions_settings() {
+            Ok(()) => {
+                self.status_line =
+                    "Opened system microphone settings. Grant access for this app, then retry."
+                        .to_string();
+            }
+            Err(err) => self.status_line = err,
+        }
+    }
+
     fn pause_or_resume_recording(&mut self) {
         match self.recorder.lock() {
             Ok(mut recorder) => {
@@ -490,6 +531,16 @@ impl WgoApp {
                     ui.selectable_value(&mut self.selected_microphone, Some(mic.clone()), mic);
                 }
             });
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Request microphone permission").clicked() {
+                self.request_microphone_permission();
+            }
+            if ui.button("Open microphone settings").clicked() {
+                self.open_microphone_settings();
+            }
+        });
 
         ui.add_space(8.0);
         ui.label("Markdown output folder");
