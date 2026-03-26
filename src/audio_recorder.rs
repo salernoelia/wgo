@@ -1,3 +1,5 @@
+use crate::TranscriptionHistory;
+use crate::TranscriptionRecord;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::PathBuf;
@@ -120,6 +122,48 @@ impl AudioRecorder {
             self.start_recording();
             None
         }
+    }
+
+    pub fn save_transcription(filename: &str, transcription: &str) {
+        let mut history = TranscriptionHistory::load();
+        let record = TranscriptionRecord {
+            filename: filename.to_string(),
+            transcription: transcription.to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        };
+        history.add_record(record);
+    }
+
+    pub fn process_transcription(filename: &str) {
+        let transcription = match crate::groq_request::transcribe_audio(filename) {
+            Ok(transcription) => transcription,
+            Err(e) => {
+                eprintln!("Transcription error: {}", e);
+                return;
+            }
+        };
+
+        println!("Transcription: {}", transcription);
+        crate::utils::copy_to_clipboard(&transcription);
+        Self::save_transcription(filename, &transcription);
+    }
+
+    pub fn handle_recording_toggle(recorder: &Arc<Mutex<AudioRecorder>>) {
+        let mut recorder = match recorder.lock() {
+            Ok(recorder) => recorder,
+            Err(_) => return,
+        };
+
+        let filename = match recorder.toggle_recording() {
+            Some(filename) => filename,
+            None => return,
+        };
+
+        println!("Transcribing audio file: {}", filename);
+        Self::process_transcription(&filename);
     }
 
     fn start_recording(&mut self) {

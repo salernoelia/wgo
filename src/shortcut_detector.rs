@@ -1,5 +1,9 @@
+use crate::menu;
+use crate::AudioRecorder;
+
 use rdev::{Event, EventType, Key};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub struct ShortcutDetector {
     alt_pressed: AtomicBool,
@@ -62,6 +66,24 @@ impl ShortcutDetector {
             Some(ShortcutType::ShowMenu)
         } else {
             None
+        }
+    }
+
+    pub fn create_callback(
+        self: Arc<Self>,
+        recorder: Arc<Mutex<AudioRecorder>>,
+    ) -> impl FnMut(Event) + 'static {
+        move |event: Event| match self.handle_event(event) {
+            Some(ShortcutType::ToggleRecording) => {
+                println!("Alt+Space detected: toggling recording");
+                AudioRecorder::handle_recording_toggle(&recorder);
+            }
+            Some(ShortcutType::ShowMenu) => {
+                println!("Alt+H detected: showing menu");
+                menu::show_menu(&recorder);
+                println!("Listening for key events again...");
+            }
+            None => {}
         }
     }
 }
