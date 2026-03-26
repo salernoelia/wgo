@@ -78,5 +78,4 @@ impl TranscriptionHistory {
         self.records.push(record);
         self.save();
     }
-
 }

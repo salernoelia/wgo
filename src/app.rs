@@ -1,23 +1,34 @@
 use crate::audio_recorder::AudioRecorder;
 use crate::config::AppConfig;
-use crate::shortcut_detector::HotkeyCommand;
+use crate::shortcut_detector::{HotkeyBindings, HotkeyCommand, HotkeyRuntime};
 use chrono::Local;
 use eframe::egui;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub struct WgoApp {
     recorder: Arc<Mutex<AudioRecorder>>,
     config: AppConfig,
+    hotkey_runtime: HotkeyRuntime,
     microphones: Vec<String>,
     selected_microphone: Option<String>,
+    pending_toggle_shortcut: String,
+    pending_show_shortcut: String,
+    recording_target: Option<ShortcutTarget>,
     hotkey_rx: Receiver<HotkeyCommand>,
     ui_event_rx: Receiver<UiEvent>,
     ui_event_tx: mpsc::Sender<UiEvent>,
     status_line: String,
     last_transcription: String,
+}
+
+#[derive(Clone, Copy)]
+enum ShortcutTarget {
+    Toggle,
+    ShowWindow,
 }
 
 enum UiEvent {
@@ -30,7 +41,7 @@ enum UiEvent {
 }
 
 impl WgoApp {
-    pub fn new(hotkey_rx: Receiver<HotkeyCommand>) -> Self {
+    pub fn new(hotkey_rx: Receiver<HotkeyCommand>, hotkey_runtime: HotkeyRuntime) -> Self {
         let config = AppConfig::load();
         let recorder = Arc::new(Mutex::new(AudioRecorder::new()));
 
@@ -44,7 +55,11 @@ impl WgoApp {
 
         Self {
             recorder,
+            hotkey_runtime,
             selected_microphone: config.microphone_name.clone(),
+            pending_toggle_shortcut: config.toggle_shortcut.clone(),
+            pending_show_shortcut: config.show_window_shortcut.clone(),
+            recording_target: None,
             config,
             microphones,
             hotkey_rx,
@@ -59,15 +74,54 @@ impl WgoApp {
         while let Ok(cmd) = self.hotkey_rx.try_recv() {
             match cmd {
                 HotkeyCommand::ToggleRecording => {
-                    self.bring_to_front(ctx);
                     if self.is_recording() {
+                        self.bring_to_front(ctx);
                         self.stop_recording();
+                        self.reset_window_level(ctx);
                     } else {
+                        self.bring_to_front_for_recording(ctx);
                         self.start_recording();
                     }
                 }
                 HotkeyCommand::ShowWindow => self.bring_to_front(ctx),
             }
+        }
+    }
+
+    fn apply_shortcut_recording(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.recording_target else {
+            return;
+        };
+
+        let mut captured = None;
+        ctx.input(|input| {
+            for event in &input.events {
+                if let egui::Event::Key {
+                    key,
+                    pressed,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if !pressed {
+                        continue;
+                    }
+
+                    if let Some(shortcut) = key_event_to_shortcut(*key, *modifiers) {
+                        captured = Some(shortcut);
+                        break;
+                    }
+                }
+            }
+        });
+
+        if let Some(shortcut) = captured {
+            match target {
+                ShortcutTarget::Toggle => self.pending_toggle_shortcut = shortcut,
+                ShortcutTarget::ShowWindow => self.pending_show_shortcut = shortcut,
+            }
+            self.recording_target = None;
+            self.status_line = "Shortcut captured. Save settings to apply globally.".to_string();
         }
     }
 
@@ -103,6 +157,23 @@ impl WgoApp {
         ));
     }
 
+    fn bring_to_front_for_recording(&self, ctx: &egui::Context) {
+        self.bring_to_front(ctx);
+
+        let x = ctx
+            .input(|i| i.viewport().outer_rect)
+            .map(|rect| rect.left())
+            .unwrap_or(20.0);
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, 0.0)));
+    }
+
+    fn reset_window_level(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+    }
+
     fn is_recording(&self) -> bool {
         self.recorder
             .lock()
@@ -120,12 +191,20 @@ impl WgoApp {
 
     fn save_settings(&mut self) {
         self.config.microphone_name = self.selected_microphone.clone();
+        self.config.toggle_shortcut = self.pending_toggle_shortcut.clone();
+        self.config.show_window_shortcut = self.pending_show_shortcut.clone();
         if let Ok(mut rec) = self.recorder.lock() {
             rec.set_device_name(self.config.microphone_name.clone());
         }
 
         match self.config.save() {
-            Ok(()) => self.status_line = "Settings saved".to_string(),
+            Ok(()) => {
+                self.hotkey_runtime.update_bindings(HotkeyBindings::new(
+                    self.config.toggle_shortcut.clone(),
+                    self.config.show_window_shortcut.clone(),
+                ));
+                self.status_line = "Settings saved and hotkeys updated".to_string();
+            }
             Err(err) => self.status_line = err,
         }
     }
@@ -190,8 +269,8 @@ impl WgoApp {
         let cfg = self.config.clone();
         let ui_tx = self.ui_event_tx.clone();
 
-        std::thread::spawn(move || {
-            match crate::groq_request::transcribe_audio(&filename) {
+        std::thread::spawn(
+            move || match crate::groq_request::transcribe_audio(&filename) {
                 Ok(text) => {
                     crate::utils::copy_to_clipboard(&text);
                     AudioRecorder::save_transcription(&filename, &text);
@@ -215,8 +294,8 @@ impl WgoApp {
                 Err(err) => {
                     let _ = ui_tx.send(UiEvent::Error(format!("Transcription error: {err}")));
                 }
-            }
-        });
+            },
+        );
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
@@ -267,6 +346,42 @@ impl WgoApp {
         ui.small("Tokens: {date}, {time}, {timestamp}");
 
         ui.add_space(12.0);
+        ui.label("Toggle recording shortcut");
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pending_toggle_shortcut)
+                    .hint_text("Alt+Space"),
+            );
+            if ui.button("Record").clicked() {
+                self.recording_target = Some(ShortcutTarget::Toggle);
+                self.status_line = "Press a shortcut (must include at least one modifier)."
+                    .to_string();
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.label("Show window shortcut");
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pending_show_shortcut)
+                    .hint_text("Alt+H"),
+            );
+            if ui.button("Record").clicked() {
+                self.recording_target = Some(ShortcutTarget::ShowWindow);
+                self.status_line = "Press a shortcut (must include at least one modifier)."
+                    .to_string();
+            }
+        });
+
+        if let Some(target) = self.recording_target {
+            let label = match target {
+                ShortcutTarget::Toggle => "Listening for toggle shortcut...",
+                ShortcutTarget::ShowWindow => "Listening for show-window shortcut...",
+            };
+            ui.small(label);
+        }
+
+        ui.add_space(12.0);
         if ui.button("Save settings").clicked() {
             self.save_settings();
         }
@@ -284,6 +399,7 @@ impl WgoApp {
                 .add_enabled(!is_recording, egui::Button::new("Start"))
                 .clicked()
             {
+                self.bring_to_front_for_recording(ui.ctx());
                 self.start_recording();
             }
 
@@ -300,20 +416,24 @@ impl WgoApp {
                 .clicked()
             {
                 self.stop_recording();
+                self.reset_window_level(ui.ctx());
             }
         });
 
         ui.add_space(8.0);
         ui.label(format!(
-            "Global shortcuts: Alt/Meta+Space = start/stop, Alt/Meta+H = show window"
+            "Global shortcuts: {} = start/stop, {} = show window",
+            self.config.toggle_shortcut, self.config.show_window_shortcut
         ));
     }
 }
 
 impl eframe::App for WgoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(Duration::from_millis(50));
         self.apply_hotkeys(ctx);
         self.apply_ui_events();
+        self.apply_shortcut_recording(ctx);
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.heading("wgo");
@@ -337,6 +457,60 @@ impl eframe::App for WgoApp {
             });
         });
     }
+}
+
+fn key_event_to_shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<String> {
+    let key_text = match key {
+        egui::Key::A => "A",
+        egui::Key::B => "B",
+        egui::Key::C => "C",
+        egui::Key::D => "D",
+        egui::Key::E => "E",
+        egui::Key::F => "F",
+        egui::Key::G => "G",
+        egui::Key::H => "H",
+        egui::Key::I => "I",
+        egui::Key::J => "J",
+        egui::Key::K => "K",
+        egui::Key::L => "L",
+        egui::Key::M => "M",
+        egui::Key::N => "N",
+        egui::Key::O => "O",
+        egui::Key::P => "P",
+        egui::Key::Q => "Q",
+        egui::Key::R => "R",
+        egui::Key::S => "S",
+        egui::Key::T => "T",
+        egui::Key::U => "U",
+        egui::Key::V => "V",
+        egui::Key::W => "W",
+        egui::Key::X => "X",
+        egui::Key::Y => "Y",
+        egui::Key::Z => "Z",
+        egui::Key::Space => "Space",
+        _ => return None,
+    };
+
+    let mut parts: Vec<&str> = Vec::new();
+    if modifiers.ctrl {
+        parts.push("Ctrl");
+    }
+    if modifiers.alt {
+        parts.push("Alt");
+    }
+    if modifiers.shift {
+        parts.push("Shift");
+    }
+    if modifiers.mac_cmd || modifiers.command {
+        parts.push("Meta");
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    parts.push(key_text);
+    Some(parts.join("+"))
 }
 
 fn save_transcription_markdown(

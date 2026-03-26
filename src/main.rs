@@ -7,13 +7,21 @@ mod transcription_history;
 mod utils;
 
 use app::WgoApp;
+use config::AppConfig;
 use eframe::egui;
-use shortcut_detector::start_global_hotkeys;
+use shortcut_detector::{start_global_hotkeys, HotkeyBindings};
 use std::sync::mpsc;
 
 fn main() {
+    let config = AppConfig::load();
     let (hotkey_tx, hotkey_rx) = mpsc::channel();
-    let _hotkey_runtime = start_global_hotkeys(hotkey_tx);
+    let hotkey_runtime = start_global_hotkeys(
+        hotkey_tx,
+        HotkeyBindings::new(
+            config.toggle_shortcut.clone(),
+            config.show_window_shortcut.clone(),
+        ),
+    );
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -26,7 +34,7 @@ fn main() {
     let run_result = eframe::run_native(
         "wgo",
         options,
-        Box::new(move |_cc| Ok(Box::new(WgoApp::new(hotkey_rx)))),
+        Box::new(move |_cc| Ok(Box::new(WgoApp::new(hotkey_rx, hotkey_runtime)))),
     );
 
     if let Err(err) = run_result {

@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub microphone_name: Option<String>,
     pub markdown_dir: String,
     pub markdown_pattern: String,
+    pub toggle_shortcut: String,
+    pub show_window_shortcut: String,
 }
 
 impl Default for AppConfig {
@@ -23,6 +25,8 @@ impl Default for AppConfig {
             microphone_name: None,
             markdown_dir: default_md_dir,
             markdown_pattern: "transcription_{date}_{time}.md".to_string(),
+            toggle_shortcut: "Alt+Space".to_string(),
+            show_window_shortcut: "Alt+H".to_string(),
         }
     }
 }
@@ -43,7 +47,18 @@ impl AppConfig {
         let path = Self::config_path();
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(cfg) = serde_json::from_str::<Self>(&content) {
-                return cfg;
+                let mut merged = Self::default();
+                merged.groq_api_key = cfg.groq_api_key;
+                merged.microphone_name = cfg.microphone_name;
+                merged.markdown_dir = cfg.markdown_dir;
+                merged.markdown_pattern = cfg.markdown_pattern;
+                if !cfg.toggle_shortcut.trim().is_empty() {
+                    merged.toggle_shortcut = cfg.toggle_shortcut;
+                }
+                if !cfg.show_window_shortcut.trim().is_empty() {
+                    merged.show_window_shortcut = cfg.show_window_shortcut;
+                }
+                return merged;
             }
         }
 
