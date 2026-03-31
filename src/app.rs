@@ -35,6 +35,7 @@ pub struct WgoApp {
     status_line: String,
     last_transcription: String,
     last_failed_audio_path: Option<String>,
+    update_state: UpdateState,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,25 @@ enum UiEvent {
         audio_path: String,
         error: String,
     },
+    UpdateAvailable {
+        version: String,
+        url: String,
+    },
+    UpToDate,
+    UpdateCheckFailed(String),
+}
+
+#[derive(Default)]
+enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    UpdateAvailable {
+        version: String,
+        url: String,
+    },
+    UpToDate,
+    Failed(String),
 }
 
 impl WgoApp {
@@ -94,6 +114,7 @@ impl WgoApp {
             status_line: "Ready".to_string(),
             last_transcription: String::new(),
             last_failed_audio_path: None,
+            update_state: UpdateState::Idle,
         }
     }
 
@@ -241,8 +262,61 @@ impl WgoApp {
                     self.last_failed_audio_path = Some(audio_path.clone());
                     self.status_line = format!("{error} | You can retry for {audio_path}");
                 }
+                UiEvent::UpdateAvailable { version, url } => {
+                    self.update_state = UpdateState::UpdateAvailable { version, url };
+                }
+                UiEvent::UpToDate => {
+                    self.update_state = UpdateState::UpToDate;
+                }
+                UiEvent::UpdateCheckFailed(err) => {
+                    self.update_state = UpdateState::Failed(err);
+                }
             }
         }
+    }
+
+    fn check_for_updates(&mut self) {
+        self.update_state = UpdateState::Checking;
+        let ui_tx = self.ui_event_tx.clone();
+
+        std::thread::spawn(move || {
+            let result = (|| -> Result<(String, String), String> {
+                let client = reqwest::blocking::Client::builder()
+                    .user_agent("wgo-updater")
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let resp: serde_json::Value = client
+                    .get("https://api.github.com/repos/salernoelia/wgo/releases/latest")
+                    .send()
+                    .map_err(|e| e.to_string())?
+                    .json()
+                    .map_err(|e| e.to_string())?;
+                let tag = resp["tag_name"]
+                    .as_str()
+                    .ok_or("Missing tag_name")?
+                    .trim_start_matches('v')
+                    .to_string();
+                let url = resp["html_url"]
+                    .as_str()
+                    .ok_or("Missing html_url")?
+                    .to_string();
+                Ok((tag, url))
+            })();
+
+            match result {
+                Ok((latest, url)) => {
+                    let current = env!("CARGO_PKG_VERSION");
+                    if latest != current {
+                        let _ = ui_tx.send(UiEvent::UpdateAvailable { version: latest, url });
+                    } else {
+                        let _ = ui_tx.send(UiEvent::UpToDate);
+                    }
+                }
+                Err(e) => {
+                    let _ = ui_tx.send(UiEvent::UpdateCheckFailed(e));
+                }
+            }
+        });
     }
 
     fn bring_to_front(&self, ctx: &egui::Context) {
@@ -628,6 +702,45 @@ impl WgoApp {
         if ui.button("Save settings").clicked() {
             self.save_settings();
         }
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            let checking = matches!(self.update_state, UpdateState::Checking);
+            if ui
+                .add_enabled(!checking, egui::Button::new("Check for updates"))
+                .clicked()
+            {
+                self.check_for_updates();
+            }
+            match &self.update_state {
+                UpdateState::Idle => {}
+                UpdateState::Checking => {
+                    ui.spinner();
+                }
+                UpdateState::UpToDate => {
+                    ui.label(
+                        egui::RichText::new(format!("v{} is up to date", env!("CARGO_PKG_VERSION")))
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                UpdateState::UpdateAvailable { version, url } => {
+                    ui.label(
+                        egui::RichText::new(format!("v{version} available!"))
+                            .color(egui::Color32::from_rgb(240, 180, 60)),
+                    );
+                    ui.hyperlink_to("Download", url);
+                }
+                UpdateState::Failed(err) => {
+                    ui.label(
+                        egui::RichText::new(format!("Update check failed: {err}"))
+                            .color(ui.visuals().error_fg_color),
+                    );
+                }
+            }
+        });
     }
 
     fn controls_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
