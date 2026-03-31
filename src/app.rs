@@ -411,9 +411,8 @@ impl WgoApp {
                 self.status_line = "Microphone permission request was triggered. If no prompt appeared, open system microphone settings and grant access for this app.".to_string();
             }
             Err(err) => {
-                self.status_line = format!(
-                    "{err} | Use 'Open microphone settings' to grant permission manually."
-                );
+                self.status_line =
+                    format!("{err} | Use 'Open microphone settings' to grant permission manually.");
             }
         }
     }
@@ -478,6 +477,35 @@ impl WgoApp {
 
         self.status_line = format!("Recording stopped. Transcribing {}...", filename);
         self.start_transcription_job(filename);
+    }
+
+    fn cancel_recording(&mut self, ctx: &egui::Context) {
+        let filename = match self.recorder.lock() {
+            Ok(mut recorder) => match recorder.stop_recording() {
+                Ok(Some(path)) => path,
+                Ok(None) => {
+                    self.status_line = "No active recording".to_string();
+                    return;
+                }
+                Err(err) => {
+                    self.status_line = err;
+                    return;
+                }
+            },
+            Err(_) => {
+                self.status_line = "Failed to lock recorder".to_string();
+                return;
+            }
+        };
+
+        self.exit_recording_mode(ctx);
+
+        match std::fs::remove_file(&filename) {
+            Ok(()) => self.status_line = "Recording cancelled and discarded.".to_string(),
+            Err(err) => {
+                self.status_line = format!("Recording cancelled, but could not delete file: {err}")
+            }
+        }
     }
 
     fn retry_last_transcription(&mut self) {
@@ -631,6 +659,13 @@ impl WgoApp {
                 .clicked()
             {
                 self.stop_recording(ui.ctx());
+            }
+
+            if ui
+                .add_enabled(is_recording, egui::Button::new("Cancel"))
+                .clicked()
+            {
+                self.cancel_recording(ui.ctx());
             }
         });
 
