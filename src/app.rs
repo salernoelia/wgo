@@ -738,6 +738,66 @@ impl WgoApp {
         ui.separator();
     }
 
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        for file in dropped {
+            let Some(path) = file.path else { continue };
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+                .unwrap_or_default();
+
+            if !["mp3", "wav", "m4a", "ogg", "flac", "webm"].contains(&ext.as_str()) {
+                self.status_line = format!(
+                    "Unsupported file type: .{ext}. Supported: mp3, wav, m4a, ogg, flac, webm"
+                );
+                continue;
+            }
+
+            if !has_non_empty_api_key(&self.config) {
+                self.active_tab = AppTab::Settings;
+                self.status_line =
+                    "Cannot transcribe without a Groq API key. Add one in Settings.".to_string();
+                return;
+            }
+
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string());
+            self.status_line = format!("Transcribing {name}...");
+            self.start_transcription_job(path.to_string_lossy().to_string());
+        }
+    }
+
+    fn drop_overlay_ui(&self, ctx: &egui::Context) {
+        let is_hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        if !is_hovering {
+            return;
+        }
+
+        let screen = ctx.screen_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("drop_overlay"),
+        ));
+
+        painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
+
+        let center = screen.center();
+        let label = egui::RichText::new("Drop audio file to transcribe")
+            .size(22.0)
+            .color(egui::Color32::WHITE);
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            label.text(),
+            egui::FontId::proportional(22.0),
+            egui::Color32::WHITE,
+        );
+    }
+
     fn mic_graph_ui(&self, ui: &mut egui::Ui) {
         let desired_size = egui::vec2(ui.available_width(), 72.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
@@ -812,6 +872,8 @@ impl eframe::App for WgoApp {
         self.apply_ui_events();
         self.apply_shortcut_recording(ctx);
         self.sample_mic_graph_if_due();
+        self.handle_dropped_files(ctx);
+        self.drop_overlay_ui(ctx);
         let is_recording = self.is_recording();
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {

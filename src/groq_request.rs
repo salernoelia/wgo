@@ -6,6 +6,18 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+fn mime_for_ext(ext: &str) -> &'static str {
+    match ext.to_lowercase().as_str() {
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "webm" => "audio/webm",
+        _ => "application/octet-stream",
+    }
+}
+
 fn get_exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -58,9 +70,15 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| file_path.to_owned());
 
+    let mime = audio_file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(mime_for_ext)
+        .unwrap_or("application/octet-stream");
+
     let file_part = Part::bytes(buffer)
         .file_name(file_name)
-        .mime_str("audio/wav")?;
+        .mime_str(mime)?;
 
     let form = Form::new()
         .part("file", file_part)
