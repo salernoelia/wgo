@@ -196,11 +196,24 @@ impl AudioRecorder {
             }
         };
 
-        let stream_config = supported.config();
+        // Try to get a 16kHz config — Whisper works best at 16kHz and it keeps files small.
+        // If the device doesn't support it, fall back to the default rate.
+        const TARGET_RATE: cpal::SampleRate = cpal::SampleRate(8000);
+        let stream_config = {
+            let found_16k = device.supported_input_configs().ok().and_then(|mut cfgs| {
+                cfgs.find(|c| {
+                    c.min_sample_rate() <= TARGET_RATE && c.max_sample_rate() >= TARGET_RATE
+                })
+                .map(|c| c.with_sample_rate(TARGET_RATE).config())
+            });
+            found_16k.unwrap_or_else(|| supported.config())
+        };
         let sample_format = supported.sample_format();
+        let num_input_channels = stream_config.channels as usize;
 
+        // Always write mono — halves (or more) the file size vs stereo.
         let spec = WavSpec {
-            channels: stream_config.channels,
+            channels: 1,
             sample_rate: stream_config.sample_rate.0,
             bits_per_sample: 16,
             sample_format: SampleFormat::Int,
@@ -247,9 +260,10 @@ impl AudioRecorder {
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
-                                for &sample in data {
-                                    peak = peak.max(sample.abs());
-                                    let _ = writer.write_sample(Self::i16_from_f32(sample));
+                                for frame in data.chunks(num_input_channels) {
+                                    let mono = frame.iter().sum::<f32>() / frame.len() as f32;
+                                    peak = peak.max(mono.abs());
+                                    let _ = writer.write_sample(Self::i16_from_f32(mono));
                                 }
                                 let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
                                 level_milli_clone.store(scaled, Ordering::SeqCst);
@@ -280,9 +294,11 @@ impl AudioRecorder {
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
-                                for &sample in data {
-                                    peak = peak.max((sample as f32 / i16::MAX as f32).abs());
-                                    let _ = writer.write_sample(sample);
+                                for frame in data.chunks(num_input_channels) {
+                                    let mono = frame.iter().map(|&s| s as f32).sum::<f32>()
+                                        / frame.len() as f32;
+                                    peak = peak.max((mono / i16::MAX as f32).abs());
+                                    let _ = writer.write_sample(mono as i16);
                                 }
                                 let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
                                 level_milli_clone.store(scaled, Ordering::SeqCst);
@@ -313,10 +329,14 @@ impl AudioRecorder {
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
-                                for &sample in data {
-                                    let i16_sample = Self::i16_from_u16(sample);
-                                    peak = peak.max((i16_sample as f32 / i16::MAX as f32).abs());
-                                    let _ = writer.write_sample(i16_sample);
+                                for frame in data.chunks(num_input_channels) {
+                                    let mono = frame
+                                        .iter()
+                                        .map(|&s| Self::i16_from_u16(s) as f32)
+                                        .sum::<f32>()
+                                        / frame.len() as f32;
+                                    peak = peak.max((mono / i16::MAX as f32).abs());
+                                    let _ = writer.write_sample(mono as i16);
                                 }
                                 let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
                                 level_milli_clone.store(scaled, Ordering::SeqCst);
@@ -551,6 +571,31 @@ impl AudioRecorder {
                             .to_string(),
                     );
                 }
+            }
+        }
+
+        // Convert WAV to M4A (AAC) to drastically reduce file size.
+        // afconvert is built into macOS; Groq accepts m4a.
+        if let Some(ref wav_path) = completed_filename {
+            let m4a_path = wav_path.replace(".wav", ".m4a");
+            let status = std::process::Command::new("afconvert")
+                .args([
+                    "-f", "m4af",
+                    "-d", "aac",
+                    "-b", "32000",
+                    "-c", "1",
+                    wav_path,
+                    &m4a_path,
+                ])
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    let _ = std::fs::remove_file(wav_path);
+                    println!("Converted to M4A: {}", m4a_path);
+                    return Ok(Some(m4a_path));
+                }
+                Ok(s) => eprintln!("afconvert failed with status: {}", s),
+                Err(e) => eprintln!("afconvert not available: {}", e),
             }
         }
 
