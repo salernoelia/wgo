@@ -8,9 +8,12 @@ pub struct AppConfig {
     pub microphone_name: Option<String>,
     pub markdown_dir: String,
     pub markdown_pattern: String,
+    pub audio_dir: String,
     pub toggle_shortcut: String,
     pub show_window_shortcut: String,
     pub minimize_on_stop: bool,
+    pub hold_to_record_key: String,
+    pub hold_to_record_threshold_ms: u64,
 }
 
 impl Default for AppConfig {
@@ -21,14 +24,22 @@ impl Default for AppConfig {
             .to_string_lossy()
             .to_string();
 
+        let default_audio_dir = crate::config::AppConfig::app_data_dir()
+            .join("recordings")
+            .to_string_lossy()
+            .to_string();
+
         Self {
             groq_api_key: String::new(),
             microphone_name: None,
             markdown_dir: default_md_dir,
             markdown_pattern: "transcription_{date}_{time}.md".to_string(),
+            audio_dir: default_audio_dir,
             toggle_shortcut: "Alt+Space".to_string(),
             show_window_shortcut: "Alt+H".to_string(),
             minimize_on_stop: false,
+            hold_to_record_key: "Ctrl".to_string(),
+            hold_to_record_threshold_ms: 400,
         }
     }
 }
@@ -65,6 +76,13 @@ impl AppConfig {
                     merged.show_window_shortcut = cfg.show_window_shortcut;
                 }
                 merged.minimize_on_stop = cfg.minimize_on_stop;
+                if !cfg.audio_dir.trim().is_empty() {
+                    merged.audio_dir = cfg.audio_dir;
+                }
+                if !cfg.hold_to_record_key.trim().is_empty() {
+                    merged.hold_to_record_key = cfg.hold_to_record_key;
+                }
+                merged.hold_to_record_threshold_ms = cfg.hold_to_record_threshold_ms;
                 return merged;
             }
         }

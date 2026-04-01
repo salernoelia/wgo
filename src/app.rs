@@ -23,6 +23,10 @@ pub struct WgoApp {
     selected_microphone: Option<String>,
     pending_toggle_shortcut: String,
     pending_show_shortcut: String,
+    pending_audio_dir: String,
+    pending_hold_key: String,
+    pending_hold_threshold_ms: f32,
+    capturing_hold_key: bool,
     recording_target: Option<ShortcutTarget>,
     hotkey_rx: Receiver<HotkeyCommand>,
     ui_event_rx: Receiver<UiEvent>,
@@ -36,6 +40,8 @@ pub struct WgoApp {
     last_transcription: String,
     last_failed_audio_path: Option<String>,
     update_state: UpdateState,
+    hold_key_down_since: Option<Instant>,
+    hold_recording_active: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,7 +106,13 @@ impl WgoApp {
             selected_microphone: config.microphone_name.clone(),
             pending_toggle_shortcut: config.toggle_shortcut.clone(),
             pending_show_shortcut: config.show_window_shortcut.clone(),
+            pending_audio_dir: config.audio_dir.clone(),
+            pending_hold_key: config.hold_to_record_key.clone(),
+            pending_hold_threshold_ms: config.hold_to_record_threshold_ms as f32,
+            capturing_hold_key: false,
             recording_target: None,
+            hold_key_down_since: None,
+            hold_recording_active: false,
             config,
             microphones,
             hotkey_rx,
@@ -198,6 +210,93 @@ impl WgoApp {
                     }
                 }
                 HotkeyCommand::ShowWindow => self.bring_to_front(ctx),
+            }
+        }
+    }
+
+    fn apply_hold_to_record(&mut self, ctx: &egui::Context) {
+        if self.capturing_hold_key {
+            let mut captured = None;
+            ctx.input(|input| {
+                for event in &input.events {
+                    if let egui::Event::Key { key, pressed, modifiers, .. } = event {
+                        if !pressed {
+                            continue;
+                        }
+                        // Capture modifier-only key presses
+                        if modifiers.ctrl && !modifiers.alt && !modifiers.shift && !modifiers.mac_cmd && !modifiers.command {
+                            captured = Some("Ctrl".to_string());
+                            break;
+                        }
+                        if modifiers.alt && !modifiers.ctrl && !modifiers.shift && !modifiers.mac_cmd && !modifiers.command {
+                            captured = Some("Alt".to_string());
+                            break;
+                        }
+                        if modifiers.shift && !modifiers.ctrl && !modifiers.alt && !modifiers.mac_cmd && !modifiers.command {
+                            captured = Some("Shift".to_string());
+                            break;
+                        }
+                        if (modifiers.mac_cmd || modifiers.command) && !modifiers.ctrl && !modifiers.alt && !modifiers.shift {
+                            captured = Some("Meta".to_string());
+                            break;
+                        }
+                        // Capture regular keys (no modifiers)
+                        if !modifiers.ctrl && !modifiers.alt && !modifiers.shift && !modifiers.mac_cmd && !modifiers.command {
+                            let key_str = format!("{:?}", key);
+                            captured = Some(key_str);
+                            break;
+                        }
+                    }
+                }
+            });
+            if let Some(key) = captured {
+                self.pending_hold_key = key;
+                self.capturing_hold_key = false;
+                self.status_line = "Hold key captured. Save settings to apply.".to_string();
+            }
+            return;
+        }
+
+        let threshold = Duration::from_millis(self.config.hold_to_record_threshold_ms);
+        let hold_key = self.config.hold_to_record_key.clone();
+
+        let key_held_alone = ctx.input(|input| {
+            match hold_key.as_str() {
+                "Ctrl" => input.modifiers.ctrl && !input.modifiers.alt && !input.modifiers.shift && !input.modifiers.mac_cmd && !input.modifiers.command && input.keys_down.is_empty(),
+                "Alt" => input.modifiers.alt && !input.modifiers.ctrl && !input.modifiers.shift && !input.modifiers.mac_cmd && !input.modifiers.command && input.keys_down.is_empty(),
+                "Shift" => input.modifiers.shift && !input.modifiers.ctrl && !input.modifiers.alt && !input.modifiers.mac_cmd && !input.modifiers.command && input.keys_down.is_empty(),
+                "Meta" => (input.modifiers.mac_cmd || input.modifiers.command) && !input.modifiers.ctrl && !input.modifiers.alt && !input.modifiers.shift && input.keys_down.is_empty(),
+                other => {
+                    // Regular key: parse and check
+                    if let Some(key) = parse_egui_key(other) {
+                        !input.modifiers.ctrl && !input.modifiers.alt && !input.modifiers.shift && !input.modifiers.mac_cmd && !input.modifiers.command && input.keys_down.len() == 1 && input.keys_down.contains(&key)
+                    } else {
+                        false
+                    }
+                }
+            }
+        });
+
+        let now = Instant::now();
+
+        if key_held_alone {
+            if self.hold_key_down_since.is_none() {
+                self.hold_key_down_since = Some(now);
+            }
+            if let Some(since) = self.hold_key_down_since {
+                if !self.hold_recording_active && now.duration_since(since) >= threshold && !self.is_recording() {
+                    self.hold_recording_active = true;
+                    self.start_recording(ctx);
+                }
+            }
+        } else {
+            if self.hold_recording_active && self.is_recording() {
+                self.hold_recording_active = false;
+                self.stop_recording(ctx);
+            }
+            self.hold_key_down_since = None;
+            if !key_held_alone {
+                self.hold_recording_active = false;
             }
         }
     }
@@ -396,8 +495,13 @@ impl WgoApp {
         self.config.microphone_name = self.selected_microphone.clone();
         self.config.toggle_shortcut = self.pending_toggle_shortcut.clone();
         self.config.show_window_shortcut = self.pending_show_shortcut.clone();
+        self.config.audio_dir = self.pending_audio_dir.clone();
+        self.config.hold_to_record_key = self.pending_hold_key.clone();
+        self.config.hold_to_record_threshold_ms = self.pending_hold_threshold_ms as u64;
         if let Ok(mut rec) = self.recorder.lock() {
             rec.set_device_name(self.config.microphone_name.clone());
+            let dir = std::path::PathBuf::from(self.config.audio_dir.trim());
+            rec.set_recordings_dir(if dir.as_os_str().is_empty() { None } else { Some(dir) });
         }
 
         match self.config.save() {
@@ -600,6 +704,12 @@ impl WgoApp {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Save settings").clicked() {
+            self.save_settings();
+        }
+        ui.separator();
+        ui.add_space(4.0);
+
         ui.label("Groq API key");
         ui.add(
             egui::TextEdit::singleline(&mut self.config.groq_api_key)
@@ -660,6 +770,13 @@ impl WgoApp {
         ui.small("Tokens: {date}, {time}, {timestamp}");
 
         ui.add_space(8.0);
+        ui.label("Audio recordings folder");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.pending_audio_dir)
+                .hint_text("/path/to/recordings"),
+        );
+
+        ui.add_space(8.0);
         ui.checkbox(
             &mut self.config.minimize_on_stop,
             "Minimize window when stopping recording",
@@ -699,9 +816,30 @@ impl WgoApp {
         }
 
         ui.add_space(12.0);
-        if ui.button("Save settings").clicked() {
-            self.save_settings();
-        }
+        ui.label("Hold-to-record key");
+        ui.small("Hold this key alone (no other keys) to start recording after the threshold.");
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pending_hold_key)
+                    .hint_text("Ctrl"),
+            );
+            let capture_label = if self.capturing_hold_key {
+                "Listening..."
+            } else {
+                "Capture"
+            };
+            if ui.button(capture_label).clicked() {
+                self.capturing_hold_key = true;
+                self.status_line = "Press a single key or modifier to use for hold-to-record.".to_string();
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.label(format!(
+            "Hold threshold: {:.0} ms",
+            self.pending_hold_threshold_ms
+        ));
+        ui.add(egui::Slider::new(&mut self.pending_hold_threshold_ms, 100.0..=2000.0).suffix(" ms").integer());
 
         ui.add_space(16.0);
         ui.separator();
@@ -984,6 +1122,7 @@ impl eframe::App for WgoApp {
         self.apply_hotkeys(ctx);
         self.apply_ui_events();
         self.apply_shortcut_recording(ctx);
+        self.apply_hold_to_record(ctx);
         self.sample_mic_graph_if_due();
         self.handle_dropped_files(ctx);
         self.drop_overlay_ui(ctx);
@@ -1084,6 +1223,39 @@ fn key_event_to_shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<S
 
     parts.push(key_text);
     Some(parts.join("+"))
+}
+
+fn parse_egui_key(name: &str) -> Option<egui::Key> {
+    match name {
+        "A" => Some(egui::Key::A),
+        "B" => Some(egui::Key::B),
+        "C" => Some(egui::Key::C),
+        "D" => Some(egui::Key::D),
+        "E" => Some(egui::Key::E),
+        "F" => Some(egui::Key::F),
+        "G" => Some(egui::Key::G),
+        "H" => Some(egui::Key::H),
+        "I" => Some(egui::Key::I),
+        "J" => Some(egui::Key::J),
+        "K" => Some(egui::Key::K),
+        "L" => Some(egui::Key::L),
+        "M" => Some(egui::Key::M),
+        "N" => Some(egui::Key::N),
+        "O" => Some(egui::Key::O),
+        "P" => Some(egui::Key::P),
+        "Q" => Some(egui::Key::Q),
+        "R" => Some(egui::Key::R),
+        "S" => Some(egui::Key::S),
+        "T" => Some(egui::Key::T),
+        "U" => Some(egui::Key::U),
+        "V" => Some(egui::Key::V),
+        "W" => Some(egui::Key::W),
+        "X" => Some(egui::Key::X),
+        "Y" => Some(egui::Key::Y),
+        "Z" => Some(egui::Key::Z),
+        "Space" => Some(egui::Key::Space),
+        _ => None,
+    }
 }
 
 fn save_transcription_markdown(

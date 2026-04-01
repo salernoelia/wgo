@@ -40,6 +40,7 @@ pub struct AudioRecorder {
     writer: Option<Arc<Mutex<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
     current_filename: Option<String>,
     device_name: Option<String>,
+    recordings_dir: Option<PathBuf>,
 }
 
 impl AudioRecorder {
@@ -53,7 +54,12 @@ impl AudioRecorder {
             writer: None,
             current_filename: None,
             device_name: None,
+            recordings_dir: None,
         }
+    }
+
+    pub fn set_recordings_dir(&mut self, dir: Option<PathBuf>) {
+        self.recordings_dir = dir;
     }
 
     pub fn list_input_devices() -> Result<Vec<String>, String> {
@@ -75,8 +81,11 @@ impl AudioRecorder {
         self.device_name = device_name;
     }
 
-    fn get_recordings_dir() -> PathBuf {
-        let recordings_dir = crate::config::AppConfig::app_data_dir().join("recordings");
+    fn get_recordings_dir(&self) -> PathBuf {
+        let recordings_dir = self
+            .recordings_dir
+            .clone()
+            .unwrap_or_else(|| crate::config::AppConfig::app_data_dir().join("recordings"));
 
         if let Err(e) = std::fs::create_dir_all(&recordings_dir) {
             eprintln!("Warning: Failed to create recordings directory: {}", e);
@@ -225,7 +234,7 @@ impl AudioRecorder {
             .as_secs();
 
         let filename = format!("recording_{}.wav", timestamp);
-        let file_path = Self::get_recordings_dir().join(&filename);
+        let file_path = self.get_recordings_dir().join(&filename);
         self.current_filename = Some(file_path.to_string_lossy().to_string());
 
         let writer = match WavWriter::create(&file_path, spec) {
