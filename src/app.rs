@@ -1,6 +1,7 @@
 use crate::audio_recorder::AudioRecorder;
 use crate::config::AppConfig;
 use crate::shortcut_detector::{HotkeyBindings, HotkeyCommand, HotkeyRuntime};
+use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use chrono::Local;
 use eframe::egui;
 use std::fs;
@@ -8,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MIC_GRAPH_HISTORY_LEN: usize = 120;
 const MIC_GRAPH_SAMPLE_INTERVAL: Duration = Duration::from_millis(16);
@@ -36,6 +38,7 @@ pub struct WgoApp {
     last_transcription: String,
     last_failed_audio_path: Option<String>,
     update_state: UpdateState,
+    history: TranscriptionHistory,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -94,6 +97,8 @@ impl WgoApp {
 
         let (ui_event_tx, ui_event_rx) = mpsc::channel();
 
+        let history = TranscriptionHistory::load();
+
         Self {
             recorder,
             hotkey_runtime,
@@ -115,6 +120,7 @@ impl WgoApp {
             last_transcription: String::new(),
             last_failed_audio_path: None,
             update_state: UpdateState::Idle,
+            history,
         }
     }
 
@@ -249,6 +255,19 @@ impl WgoApp {
                 } => {
                     self.last_transcription = text.clone();
                     self.last_failed_audio_path = None;
+
+                    if let Some(path) = &markdown_path {
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        self.history.add_record(TranscriptionRecord {
+                            filename: path.to_string_lossy().to_string(),
+                            transcription: text,
+                            timestamp,
+                        });
+                    }
+
                     self.status_line = match markdown_path {
                         Some(path) => format!(
                             "Audio: {} \nMarkdown:{}",
@@ -875,6 +894,18 @@ impl WgoApp {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.active_tab, AppTab::Recorder, "Recorder");
             ui.selectable_value(&mut self.active_tab, AppTab::Settings, "Settings");
+
+            let open_last = ui.add_enabled(
+                self.history.has_history(),
+                egui::Button::new("Open last transcription"),
+            );
+            if open_last.clicked() {
+                if let Some(record) = self.history.latest() {
+                    if let Err(err) = crate::utils::open_markdown_in_editor(&record.filename) {
+                        self.status_line = format!("Failed to open transcription: {err}");
+                    }
+                }
+            }
         });
         ui.separator();
     }

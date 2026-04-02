@@ -38,7 +38,7 @@ pub struct AudioRecorder {
     is_paused: Arc<AtomicBool>,
     level_milli: Arc<AtomicU32>,
     writer: Option<Arc<Mutex<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
-    current_filename: Option<String>,
+    pub current_filename: Option<String>,
     device_name: Option<String>,
 }
 
@@ -580,12 +580,7 @@ impl AudioRecorder {
             let m4a_path = wav_path.replace(".wav", ".m4a");
             let status = std::process::Command::new("afconvert")
                 .args([
-                    "-f", "m4af",
-                    "-d", "aac",
-                    "-b", "32000",
-                    "-c", "1",
-                    wav_path,
-                    &m4a_path,
+                    "-f", "m4af", "-d", "aac", "-b", "32000", "-c", "1", wav_path, &m4a_path,
                 ])
                 .status();
             match status {
