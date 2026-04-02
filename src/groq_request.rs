@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SUPPORTED_AUDIO_EXTS: [&str; 6] = ["mp3", "wav", "m4a", "ogg", "flac", "webm"];
+const SUPPORTED_AUDIO_EXTS: [&str; 7] = ["mp3", "wav", "m4a", "ogg", "opus", "flac", "webm"];
 const SUPPORTED_VIDEO_EXTS: [&str; 7] = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg"];
 
 fn mime_for_ext(ext: &str) -> &'static str {
@@ -18,6 +18,7 @@ fn mime_for_ext(ext: &str) -> &'static str {
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
         "ogg" => "audio/ogg",
+        "opus" => "audio/ogg",
         "flac" => "audio/flac",
         "webm" => "audio/webm",
         _ => "application/octet-stream",
