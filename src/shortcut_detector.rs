@@ -4,52 +4,105 @@ use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 #[cfg(not(target_os = "macos"))]
 use rdev::grab;
-#[cfg(not(target_os = "macos"))]
 use rdev::{listen, Event, EventType, Key};
-#[cfg(not(target_os = "macos"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
-#[cfg(not(target_os = "macos"))]
 use std::sync::Arc;
 #[cfg(not(target_os = "macos"))]
 use std::sync::RwLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Copy)]
+#[cfg(target_os = "macos")]
+use std::sync::RwLock;
+
+#[derive(Debug, Clone)]
 pub enum HotkeyCommand {
     ToggleRecording,
     ShowWindow,
+    StartHoldRecording,
+    StopHoldRecording,
+    HoldKeyCaptured(String),
+    /// macOS only: rdev listener could not start — accessibility permission not granted.
+    AccessibilityRequired,
+}
+
+/// Returns true if this process has been granted macOS Accessibility permission.
+/// The hold-to-record feature uses CGEventTap which requires this permission.
+#[cfg(target_os = "macos")]
+pub fn is_accessibility_trusted() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// On non-macOS platforms this always returns true.
+#[cfg(not(target_os = "macos"))]
+pub fn is_accessibility_trusted() -> bool {
+    true
+}
+
+/// Returns true if the given rdev key is a standard modifier key.
+/// Used for the temporal-isolation check: modifier-only presses don't count
+/// as "another key was pressed" when deciding whether to start hold recording.
+fn is_modifier_key(key: Key) -> bool {
+    matches!(
+        key,
+        Key::Alt
+            | Key::AltGr
+            | Key::MetaLeft
+            | Key::MetaRight
+            | Key::ControlLeft
+            | Key::ControlRight
+            | Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::CapsLock
+    )
 }
 
 #[derive(Debug, Clone)]
 pub struct HotkeyBindings {
     pub toggle_shortcut: String,
     pub show_window_shortcut: String,
+    pub hold_to_record_key: Option<String>,
 }
 
 impl HotkeyBindings {
-    pub fn new(toggle_shortcut: String, show_window_shortcut: String) -> Self {
+    pub fn new(
+        toggle_shortcut: String,
+        show_window_shortcut: String,
+        hold_to_record_key: Option<String>,
+    ) -> Self {
         Self {
             toggle_shortcut,
             show_window_shortcut,
+            hold_to_record_key,
         }
     }
 }
 
 enum RuntimeControl {
     Rebind(HotkeyBindings),
+    StartCaptureHoldKey,
 }
 
 pub struct HotkeyRuntime {
     control_tx: mpsc::Sender<RuntimeControl>,
     #[cfg(target_os = "macos")]
     _listener: Option<std::thread::JoinHandle<()>>,
+    #[cfg(target_os = "macos")]
+    _hold_listener: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HotkeyRuntime {
     pub fn update_bindings(&self, bindings: HotkeyBindings) {
         let _ = self.control_tx.send(RuntimeControl::Rebind(bindings));
+    }
+
+    pub fn start_capture_hold_key(&self) {
+        let _ = self.control_tx.send(RuntimeControl::StartCaptureHoldKey);
     }
 }
 
@@ -60,6 +113,7 @@ pub struct ShortcutDetector {
     ctrl_pressed: AtomicBool,
     shift_pressed: AtomicBool,
     bindings: RwLock<HotkeyBindings>,
+    capture_mode: AtomicBool,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -71,6 +125,7 @@ impl ShortcutDetector {
             ctrl_pressed: AtomicBool::new(false),
             shift_pressed: AtomicBool::new(false),
             bindings: RwLock::new(bindings),
+            capture_mode: AtomicBool::new(false),
         }
     }
 
@@ -89,7 +144,18 @@ impl ShortcutDetector {
         }
     }
 
+    pub fn set_capture_mode(&self) {
+        self.capture_mode.store(true, Ordering::SeqCst);
+    }
+
     pub fn handle_event(&self, event: Event) -> Option<HotkeyCommand> {
+        // Handle capture mode: intercept the next key press
+        if let EventType::KeyPress(key) = event.event_type {
+            if self.capture_mode.swap(false, Ordering::SeqCst) {
+                return Some(HotkeyCommand::HoldKeyCaptured(format!("{:?}", key)));
+            }
+        }
+
         match event.event_type {
             EventType::KeyPress(Key::Alt) | EventType::KeyPress(Key::AltGr) => {
                 self.alt_pressed.store(true, Ordering::SeqCst);
@@ -121,6 +187,15 @@ impl ShortcutDetector {
                     Err(_) => return None,
                 };
 
+                // Check hold-to-record key
+                if let Some(ref hold_key_name) = bindings.hold_to_record_key {
+                    if let Some(hold_key) = rdev_key_from_name(hold_key_name) {
+                        if hold_key == key {
+                            return Some(HotkeyCommand::StartHoldRecording);
+                        }
+                    }
+                }
+
                 let mods = self.current_modifiers();
                 if let Some(parsed) = parse_shortcut(&bindings.toggle_shortcut) {
                     if parsed.matches_rdev(mods, key) {
@@ -131,6 +206,20 @@ impl ShortcutDetector {
                 if let Some(parsed) = parse_shortcut(&bindings.show_window_shortcut) {
                     if parsed.matches_rdev(mods, key) {
                         return Some(HotkeyCommand::ShowWindow);
+                    }
+                }
+            }
+            EventType::KeyRelease(key) => {
+                let bindings = match self.bindings.read() {
+                    Ok(guard) => guard.clone(),
+                    Err(_) => return None,
+                };
+
+                if let Some(ref hold_key_name) = bindings.hold_to_record_key {
+                    if let Some(hold_key) = rdev_key_from_name(hold_key_name) {
+                        if hold_key == key {
+                            return Some(HotkeyCommand::StopHoldRecording);
+                        }
                     }
                 }
             }
@@ -214,6 +303,76 @@ fn parse_shortcut(raw: &str) -> Option<ParsedShortcut> {
         modifiers,
         key_name,
     })
+}
+
+/// Maps canonical rdev Debug key names to `Key` values.
+/// Used for hold-to-record key matching on all platforms.
+pub fn rdev_key_from_name(name: &str) -> Option<Key> {
+    match name {
+        "Alt" => Some(Key::Alt),
+        "AltGr" => Some(Key::AltGr),
+        "MetaLeft" => Some(Key::MetaLeft),
+        "MetaRight" => Some(Key::MetaRight),
+        "ControlLeft" => Some(Key::ControlLeft),
+        "ControlRight" => Some(Key::ControlRight),
+        "ShiftLeft" => Some(Key::ShiftLeft),
+        "ShiftRight" => Some(Key::ShiftRight),
+        "CapsLock" => Some(Key::CapsLock),
+        "Tab" => Some(Key::Tab),
+        "Space" => Some(Key::Space),
+        "Return" => Some(Key::Return),
+        "Escape" => Some(Key::Escape),
+        "Backspace" => Some(Key::Backspace),
+        "F1" => Some(Key::F1),
+        "F2" => Some(Key::F2),
+        "F3" => Some(Key::F3),
+        "F4" => Some(Key::F4),
+        "F5" => Some(Key::F5),
+        "F6" => Some(Key::F6),
+        "F7" => Some(Key::F7),
+        "F8" => Some(Key::F8),
+        "F9" => Some(Key::F9),
+        "F10" => Some(Key::F10),
+        "F11" => Some(Key::F11),
+        "F12" => Some(Key::F12),
+        "KeyA" => Some(Key::KeyA),
+        "KeyB" => Some(Key::KeyB),
+        "KeyC" => Some(Key::KeyC),
+        "KeyD" => Some(Key::KeyD),
+        "KeyE" => Some(Key::KeyE),
+        "KeyF" => Some(Key::KeyF),
+        "KeyG" => Some(Key::KeyG),
+        "KeyH" => Some(Key::KeyH),
+        "KeyI" => Some(Key::KeyI),
+        "KeyJ" => Some(Key::KeyJ),
+        "KeyK" => Some(Key::KeyK),
+        "KeyL" => Some(Key::KeyL),
+        "KeyM" => Some(Key::KeyM),
+        "KeyN" => Some(Key::KeyN),
+        "KeyO" => Some(Key::KeyO),
+        "KeyP" => Some(Key::KeyP),
+        "KeyQ" => Some(Key::KeyQ),
+        "KeyR" => Some(Key::KeyR),
+        "KeyS" => Some(Key::KeyS),
+        "KeyT" => Some(Key::KeyT),
+        "KeyU" => Some(Key::KeyU),
+        "KeyV" => Some(Key::KeyV),
+        "KeyW" => Some(Key::KeyW),
+        "KeyX" => Some(Key::KeyX),
+        "KeyY" => Some(Key::KeyY),
+        "KeyZ" => Some(Key::KeyZ),
+        "Num0" => Some(Key::Num0),
+        "Num1" => Some(Key::Num1),
+        "Num2" => Some(Key::Num2),
+        "Num3" => Some(Key::Num3),
+        "Num4" => Some(Key::Num4),
+        "Num5" => Some(Key::Num5),
+        "Num6" => Some(Key::Num6),
+        "Num7" => Some(Key::Num7),
+        "Num8" => Some(Key::Num8),
+        "Num9" => Some(Key::Num9),
+        _ => None,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -342,6 +501,33 @@ pub fn start_global_hotkeys(
 
     #[cfg(target_os = "macos")]
     {
+        // Shared state for hold key listener
+        let hold_key_shared: Arc<RwLock<Option<Key>>> = Arc::new(RwLock::new(
+            initial.hold_to_record_key.as_deref().and_then(rdev_key_from_name),
+        ));
+        let capture_mode: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
+        // Temporal-isolation shared state (defined here so both threads can borrow).
+        let hold_pressed_at: Arc<RwLock<Option<Instant>>> = Arc::new(RwLock::new(None));
+        let last_other_key_at: Arc<RwLock<Option<Instant>>> = Arc::new(RwLock::new(None));
+        let hold_active: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
+        // Clones for the global_hotkey/timer thread (Thread 1).
+        let hold_key_for_ctrl = hold_key_shared.clone();
+        let capture_for_ctrl = capture_mode.clone();
+        let hold_pressed_for_ctrl = hold_pressed_at.clone();
+        let hold_active_for_ctrl = hold_active.clone();
+        let sender_for_ctrl_hold = sender.clone();
+
+        // Clones for the rdev hold-listener thread (Thread 2).
+        let sender_for_hold = sender.clone();
+        let sender_for_hold_err = sender.clone();
+        let hold_key_for_listen = hold_key_shared.clone();
+        let capture_for_listen = capture_mode.clone();
+        let hold_pressed_for_listen = hold_pressed_at.clone();
+        let last_other_for_listen = last_other_key_at.clone();
+        let hold_active_for_listen = hold_active.clone();
+
         let listener = std::thread::spawn(move || {
             let manager = match GlobalHotKeyManager::new() {
                 Ok(manager) => manager,
@@ -368,13 +554,22 @@ pub fn start_global_hotkeys(
             loop {
                 while let Ok(msg) = control_rx.try_recv() {
                     match msg {
-                        RuntimeControl::Rebind(bindings) => apply_bindings_macos(
-                            &manager,
-                            &mut registered,
-                            &mut toggle_id,
-                            &mut show_id,
-                            &bindings,
-                        ),
+                        RuntimeControl::Rebind(bindings) => {
+                            // Update shared hold key
+                            if let Ok(mut guard) = hold_key_for_ctrl.write() {
+                                *guard = bindings.hold_to_record_key.as_deref().and_then(rdev_key_from_name);
+                            }
+                            apply_bindings_macos(
+                                &manager,
+                                &mut registered,
+                                &mut toggle_id,
+                                &mut show_id,
+                                &bindings,
+                            );
+                        }
+                        RuntimeControl::StartCaptureHoldKey => {
+                            capture_for_ctrl.store(true, Ordering::SeqCst);
+                        }
                     }
                 }
 
@@ -396,13 +591,135 @@ pub fn start_global_hotkeys(
                     }
                 }
 
+                // Check if the hold key has been held long enough to start recording.
+                {
+                    let pressed_at = hold_pressed_for_ctrl.read().ok().and_then(|g| *g);
+                    if let Some(t) = pressed_at {
+                        if t.elapsed() >= Duration::from_millis(HOLD_THRESHOLD_MS)
+                            && !hold_active_for_ctrl.load(Ordering::SeqCst)
+                        {
+                            hold_active_for_ctrl.store(true, Ordering::SeqCst);
+                            let _ = sender_for_ctrl_hold.send(HotkeyCommand::StartHoldRecording);
+                        }
+                    }
+                }
+
                 std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        // Temporal-isolation state shared between the rdev callback and the timer check.
+        // When the hold key is pressed we record the time and wait HOLD_THRESHOLD_MS before
+        // firing StartHoldRecording.  Any non-modifier keypress during that window cancels.
+        //
+        // HOLD_THRESHOLD_MS: how long the key must be held before recording starts.
+        //   Prevents accidental triggers when the key is tapped.
+        // RECENT_KEY_WINDOW_MS: if another key was pressed within this window before the
+        //   hold key, we assume it's part of a shortcut and ignore the hold.
+        //   Set longer than HOLD_THRESHOLD_MS to handle OS-level dropped KeyRelease events.
+        const HOLD_THRESHOLD_MS: u64 = 500;
+        const RECENT_KEY_WINDOW_MS: u64 = 800;
+
+        // Spawn separate rdev::listen thread for hold-to-record on macOS.
+        // rdev requires Accessibility permission (CGEventTap).  We wait until either
+        // a hold key is set or capture mode fires so we don't request the permission
+        // on first launch before the user has configured anything.
+        let hold_listener = std::thread::spawn(move || {
+            // Wait until a hold key is actually configured before starting the listener.
+            loop {
+                {
+                    let guard = hold_key_for_listen.read().ok();
+                    if guard.as_deref().and_then(|k| *k).is_some() {
+                        break;
+                    }
+                    if capture_for_listen.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+
+            let result = listen(move |event: Event| {
+                match event.event_type {
+                    EventType::KeyPress(key) => {
+                        // Capture-mode: record whatever key the user presses next.
+                        if capture_for_listen.swap(false, Ordering::SeqCst) {
+                            let _ = sender_for_hold
+                                .send(HotkeyCommand::HoldKeyCaptured(format!("{:?}", key)));
+                            return;
+                        }
+
+                        let hold_key_opt = hold_key_for_listen
+                            .read()
+                            .ok()
+                            .and_then(|g| *g);
+
+                        if let Some(hold_key) = hold_key_opt {
+                            if key == hold_key {
+                                // Only arm the timer if no non-modifier key was pressed recently.
+                                let recently_used = last_other_for_listen
+                                    .read()
+                                    .ok()
+                                    .and_then(|t| *t)
+                                    .map(|t| {
+                                        t.elapsed()
+                                            < Duration::from_millis(RECENT_KEY_WINDOW_MS)
+                                    })
+                                    .unwrap_or(false);
+
+                                if !recently_used {
+                                    if let Ok(mut guard) = hold_pressed_for_listen.write() {
+                                        *guard = Some(Instant::now());
+                                    }
+                                }
+                                return; // don't register the hold key itself as "other key"
+                            }
+                        }
+
+                        // Any other key press: cancel a pending hold start and mark the time.
+                        if !is_modifier_key(key) {
+                            if let Ok(mut guard) = hold_pressed_for_listen.write() {
+                                *guard = None;
+                            }
+                            hold_active_for_listen.store(false, Ordering::SeqCst);
+                            if let Ok(mut guard) = last_other_for_listen.write() {
+                                *guard = Some(Instant::now());
+                            }
+                        }
+                    }
+                    EventType::KeyRelease(key) => {
+                        let hold_key_opt = hold_key_for_listen
+                            .read()
+                            .ok()
+                            .and_then(|g| *g);
+
+                        if let Some(hold_key) = hold_key_opt {
+                            if key == hold_key {
+                                // Cancel pending arm.
+                                if let Ok(mut guard) = hold_pressed_for_listen.write() {
+                                    *guard = None;
+                                }
+                                // Stop if recording was active.
+                                if hold_active_for_listen.swap(false, Ordering::SeqCst) {
+                                    let _ = sender_for_hold.send(HotkeyCommand::StopHoldRecording);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            });
+
+            if let Err(err) = result {
+                eprintln!("Hold key rdev listener failed: {:?}", err);
+                let _ = sender_for_hold_err.send(HotkeyCommand::AccessibilityRequired);
             }
         });
 
         return HotkeyRuntime {
             control_tx,
             _listener: Some(listener),
+            _hold_listener: Some(hold_listener),
         };
     }
 
@@ -442,6 +759,7 @@ pub fn start_global_hotkeys(
             while let Ok(msg) = control_rx.recv() {
                 match msg {
                     RuntimeControl::Rebind(bindings) => detector.update_bindings(bindings),
+                    RuntimeControl::StartCaptureHoldKey => detector.set_capture_mode(),
                 }
             }
         });

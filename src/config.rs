@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub toggle_shortcut: String,
     pub show_window_shortcut: String,
     pub minimize_on_stop: bool,
+    pub hold_to_record_key: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -33,6 +34,7 @@ impl Default for AppConfig {
             toggle_shortcut: "Alt+Space".to_string(),
             show_window_shortcut: "Alt+H".to_string(),
             minimize_on_stop: false,
+            hold_to_record_key: Some("ControlLeft".to_string()),
         }
     }
 }
@@ -96,6 +98,7 @@ impl AppConfig {
                     merged.show_window_shortcut = cfg.show_window_shortcut;
                 }
                 merged.minimize_on_stop = cfg.minimize_on_stop;
+                merged.hold_to_record_key = cfg.hold_to_record_key;
                 return merged;
             }
         }
