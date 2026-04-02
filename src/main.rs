@@ -22,6 +22,7 @@ fn main() {
         HotkeyBindings::new(
             config.toggle_shortcut.clone(),
             config.show_window_shortcut.clone(),
+            config.hold_to_record_key.clone(),
         ),
     );
 

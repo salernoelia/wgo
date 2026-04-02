@@ -1,6 +1,6 @@
 use crate::audio_recorder::AudioRecorder;
 use crate::config::AppConfig;
-use crate::shortcut_detector::{HotkeyBindings, HotkeyCommand, HotkeyRuntime};
+use crate::shortcut_detector::{is_accessibility_trusted, HotkeyBindings, HotkeyCommand, HotkeyRuntime};
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use chrono::Local;
 use eframe::egui;
@@ -25,7 +25,9 @@ pub struct WgoApp {
     selected_microphone: Option<String>,
     pending_toggle_shortcut: String,
     pending_show_shortcut: String,
+    pending_hold_key: String,
     recording_target: Option<ShortcutTarget>,
+    recording_by_hold: bool,
     hotkey_rx: Receiver<HotkeyCommand>,
     ui_event_rx: Receiver<UiEvent>,
     ui_event_tx: mpsc::Sender<UiEvent>,
@@ -51,6 +53,7 @@ enum AppTab {
 enum ShortcutTarget {
     Toggle,
     ShowWindow,
+    HoldKey,
 }
 
 enum UiEvent {
@@ -113,7 +116,9 @@ impl WgoApp {
             selected_microphone: config.microphone_name.clone(),
             pending_toggle_shortcut: config.toggle_shortcut.clone(),
             pending_show_shortcut: config.show_window_shortcut.clone(),
+            pending_hold_key: config.hold_to_record_key.clone().unwrap_or_default(),
             recording_target: None,
+            recording_by_hold: false,
             config,
             microphones,
             hotkey_rx,
@@ -212,6 +217,29 @@ impl WgoApp {
                     }
                 }
                 HotkeyCommand::ShowWindow => self.bring_to_front(ctx),
+                HotkeyCommand::StartHoldRecording => {
+                    if !self.is_recording() {
+                        self.recording_by_hold = true;
+                        self.start_recording(ctx);
+                    }
+                }
+                HotkeyCommand::StopHoldRecording => {
+                    if self.is_recording() && self.recording_by_hold {
+                        self.recording_by_hold = false;
+                        self.stop_recording(ctx);
+                    }
+                }
+                HotkeyCommand::HoldKeyCaptured(key_name) => {
+                    self.pending_hold_key = key_name;
+                    self.recording_target = None;
+                    self.status_line = "Hold key captured. Save settings to apply.".to_string();
+                }
+                HotkeyCommand::AccessibilityRequired => {
+                    self.status_line =
+                        "Hold-to-record needs Accessibility permission. See Settings.".to_string();
+                    self.active_tab = AppTab::Settings;
+                    self.bring_to_front(ctx);
+                }
             }
         }
     }
@@ -247,9 +275,13 @@ impl WgoApp {
             match target {
                 ShortcutTarget::Toggle => self.pending_toggle_shortcut = shortcut,
                 ShortcutTarget::ShowWindow => self.pending_show_shortcut = shortcut,
+                ShortcutTarget::HoldKey => {} // handled via rdev callback
             }
-            self.recording_target = None;
-            self.status_line = "Shortcut captured. Save settings to apply globally.".to_string();
+            if !matches!(target, ShortcutTarget::HoldKey) {
+                self.recording_target = None;
+                self.status_line =
+                    "Shortcut captured. Save settings to apply globally.".to_string();
+            }
         }
     }
 
@@ -418,6 +450,11 @@ impl WgoApp {
         self.config.microphone_name = self.selected_microphone.clone();
         self.config.toggle_shortcut = self.pending_toggle_shortcut.clone();
         self.config.show_window_shortcut = self.pending_show_shortcut.clone();
+        self.config.hold_to_record_key = if self.pending_hold_key.trim().is_empty() {
+            None
+        } else {
+            Some(self.pending_hold_key.trim().to_string())
+        };
         if let Ok(mut rec) = self.recorder.lock() {
             rec.set_device_name(self.config.microphone_name.clone());
         }
@@ -427,6 +464,7 @@ impl WgoApp {
                 self.hotkey_runtime.update_bindings(HotkeyBindings::new(
                     self.config.toggle_shortcut.clone(),
                     self.config.show_window_shortcut.clone(),
+                    self.config.hold_to_record_key.clone(),
                 ));
                 self.status_line = "Settings saved and hotkeys updated".to_string();
             }
@@ -771,8 +809,57 @@ impl WgoApp {
             let label = match target {
                 ShortcutTarget::Toggle => "Listening for toggle shortcut...",
                 ShortcutTarget::ShowWindow => "Listening for show-window shortcut...",
+                ShortcutTarget::HoldKey => "Listening for hold key...",
             };
             ui.small(label);
+        }
+
+        ui.add_space(8.0);
+        ui.label("Hold-to-record key");
+        ui.small("Hold this key to record; release to stop. Works with single keys like AltGr, F13, ControlRight.");
+
+        // macOS: show Accessibility permission status — required for CGEventTap.
+        #[cfg(target_os = "macos")]
+        {
+            let trusted = is_accessibility_trusted();
+            ui.horizontal(|ui| {
+                if trusted {
+                    ui.label(
+                        egui::RichText::new("✓ Accessibility permission granted")
+                            .color(egui::Color32::from_rgb(80, 180, 80))
+                            .small(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new("✗ Accessibility permission required")
+                            .color(egui::Color32::from_rgb(220, 80, 80))
+                            .small(),
+                    );
+                    if ui.small_button("Open System Settings").clicked() {
+                        let _ = std::process::Command::new("open")
+                            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                            .spawn();
+                    }
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pending_hold_key)
+                    .hint_text("e.g. AltGr, F1, ControlRight"),
+            );
+            if ui.button("Record").clicked() {
+                self.recording_target = Some(ShortcutTarget::HoldKey);
+                self.hotkey_runtime.start_capture_hold_key();
+                self.status_line = "Press any key to set as hold-to-record key...".to_string();
+            }
+            if ui.button("Clear").clicked() {
+                self.pending_hold_key = String::new();
+                self.recording_target = None;
+            }
+        });
+        if matches!(self.recording_target, Some(ShortcutTarget::HoldKey)) {
+            ui.small("Listening for hold key...");
         }
 
         ui.separator();
