@@ -949,6 +949,21 @@ impl WgoApp {
                         egui::RichText::new("Restart to apply update")
                             .color(egui::Color32::from_rgb(120, 217, 120)),
                     );
+                    #[cfg(target_os = "macos")]
+                    {
+                        ui.label(
+                            egui::RichText::new(
+                                "After restarting, re-grant Accessibility permission: toggle wgo off and on in System Settings → Privacy & Security → Accessibility.",
+                            )
+                            .color(egui::Color32::from_rgb(220, 180, 80))
+                            .small(),
+                        );
+                        if ui.small_button("Open Accessibility Settings").clicked() {
+                            let _ = std::process::Command::new("open")
+                                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                                .spawn();
+                        }
+                    }
                 }
                 UpdateState::Failed(_) => {
                     if let Some(err) = &update_err {
@@ -1425,6 +1440,33 @@ fn do_self_update(download_url: &str) -> Result<(), String> {
         }
 
         self_replace::self_replace(&extract_to).map_err(|e| e.to_string())?;
+
+        // Re-sign the .app bundle after binary replacement.
+        // macOS TCC tracks accessibility grants by code-signature hash; replacing the
+        // binary invalidates the old grant even though System Settings still shows it
+        // as enabled.  An ad-hoc re-sign gives the bundle a consistent signature and
+        // prevents Gatekeeper from blocking the relaunch, though the user will still
+        // need to toggle the Accessibility entry off and back on once after each update.
+        if let Ok(exe_path) = std::env::current_exe() {
+            let mut current = exe_path.as_path();
+            let mut bundle_path: Option<std::path::PathBuf> = None;
+            loop {
+                if current.extension().and_then(|e| e.to_str()) == Some("app") {
+                    bundle_path = Some(current.to_path_buf());
+                    break;
+                }
+                match current.parent() {
+                    Some(p) => current = p,
+                    None => break,
+                }
+            }
+            if let Some(bundle) = bundle_path {
+                let _ = std::process::Command::new("codesign")
+                    .args(["-s", "-", "--deep", "--force"])
+                    .arg(&bundle)
+                    .output();
+            }
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
