@@ -1,6 +1,8 @@
 use crate::audio_recorder::{AudioRecorder, AudioSource};
 use crate::config::AppConfig;
-use crate::shortcut_detector::{is_accessibility_trusted, HotkeyBindings, HotkeyCommand, HotkeyRuntime};
+use crate::shortcut_detector::{
+    is_accessibility_trusted, HotkeyBindings, HotkeyCommand, HotkeyRuntime,
+};
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use chrono::Local;
 use eframe::egui;
@@ -370,14 +372,12 @@ impl WgoApp {
         self.status_line = "Downloading update...".to_string();
         let ui_tx = self.ui_event_tx.clone();
 
-        std::thread::spawn(move || {
-            match do_self_update(&download_url) {
-                Ok(()) => {
-                    let _ = ui_tx.send(UiEvent::UpdateApplied);
-                }
-                Err(e) => {
-                    let _ = ui_tx.send(UiEvent::UpdateInstallFailed(e));
-                }
+        std::thread::spawn(move || match do_self_update(&download_url) {
+            Ok(()) => {
+                let _ = ui_tx.send(UiEvent::UpdateApplied);
+            }
+            Err(e) => {
+                let _ = ui_tx.send(UiEvent::UpdateInstallFailed(e));
             }
         });
     }
@@ -782,11 +782,7 @@ impl WgoApp {
                         .unwrap_or_else(|| "Default device".to_string()),
                 )
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.selected_desktop_device,
-                        None,
-                        "Default device",
-                    );
+                    ui.selectable_value(&mut self.selected_desktop_device, None, "Default device");
                     for device in &self.desktop_devices {
                         ui.selectable_value(
                             &mut self.selected_desktop_device,
@@ -973,17 +969,16 @@ impl WgoApp {
             self.update_state,
             UpdateState::Checking | UpdateState::Updating
         );
-        let update_info: Option<(String, String, String)> =
-            if let UpdateState::UpdateAvailable {
-                version,
-                html_url,
-                download_url,
-            } = &self.update_state
-            {
-                Some((version.clone(), html_url.clone(), download_url.clone()))
-            } else {
-                None
-            };
+        let update_info: Option<(String, String, String)> = if let UpdateState::UpdateAvailable {
+            version,
+            html_url,
+            download_url,
+        } = &self.update_state
+        {
+            Some((version.clone(), html_url.clone(), download_url.clone()))
+        } else {
+            None
+        };
         let update_err: Option<String> = if let UpdateState::Failed(e) = &self.update_state {
             Some(e.clone())
         } else {
@@ -1464,9 +1459,9 @@ fn spawn_update_check(ui_tx: mpsc::Sender<UiEvent>) {
             let download_url = resp["assets"]
                 .as_array()
                 .and_then(|assets| {
-                    assets.iter().find(|a| {
-                        a["name"].as_str().map(|n| n == asset_name).unwrap_or(false)
-                    })
+                    assets
+                        .iter()
+                        .find(|a| a["name"].as_str().map(|n| n == asset_name).unwrap_or(false))
                 })
                 .and_then(|a| a["browser_download_url"].as_str())
                 .unwrap_or("")
@@ -1500,8 +1495,7 @@ fn do_self_update(download_url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let archive_path = tmp_dir.path().join("wgo-update.tar.gz");
-        let mut archive_file =
-            std::fs::File::create(&archive_path).map_err(|e| e.to_string())?;
+        let mut archive_file = std::fs::File::create(&archive_path).map_err(|e| e.to_string())?;
         let client = reqwest::blocking::Client::builder()
             .user_agent("wgo-updater")
             .build()
@@ -1526,9 +1520,7 @@ fn do_self_update(download_url: &str) -> Result<(), String> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
             if file_name == "wgo" {
-                entry
-                    .unpack(&extract_to)
-                    .map_err(|e| e.to_string())?;
+                entry.unpack(&extract_to).map_err(|e| e.to_string())?;
                 break;
             }
         }
