@@ -34,7 +34,7 @@ impl Default for AppConfig {
             toggle_shortcut: "Alt+Space".to_string(),
             show_window_shortcut: "Alt+H".to_string(),
             minimize_on_stop: false,
-            hold_to_record_key: None,
+            hold_to_record_key: Some("ControlLeft".to_string()),
         }
     }
 }
