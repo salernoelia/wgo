@@ -699,6 +699,33 @@ impl WgoApp {
             }
         });
 
+        ui.label("Audio Recordings output folder");
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.config.recordings_dir)
+                    .hint_text("/path/to/recordings"),
+            );
+            if ui.button("Open Directory").clicked() {
+                match &self.config.recordings_dir {
+                    path if path.trim().is_empty() => {
+                        self.status_line = "Recordings directory is not set.".to_string();
+                    }
+                    path => {
+                        if let Err(err) = fs::create_dir_all(path) {
+                            self.status_line =
+                                format!("Failed to create recordings directory: {err}");
+                        } else {
+                            let result = crate::utils::open_folder_in_file_explorer(path);
+                            if let Err(err) = result {
+                                self.status_line = format!("Failed to open directory: {err}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         ui.add_space(8.0);
         ui.label("Markdown file name pattern");
 

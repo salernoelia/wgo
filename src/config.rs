@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub groq_api_key: String,
     pub microphone_name: Option<String>,
     pub markdown_dir: String,
+    pub recordings_dir: String,
     pub markdown_pattern: String,
     pub toggle_shortcut: String,
     pub show_window_shortcut: String,
@@ -21,10 +22,13 @@ impl Default for AppConfig {
             .to_string_lossy()
             .to_string();
 
+        let default_recordings_dir = Self::default_recordings_dir().to_string_lossy().to_string();
+
         Self {
             groq_api_key: String::new(),
             microphone_name: None,
             markdown_dir: default_md_dir,
+            recordings_dir: default_recordings_dir,
             markdown_pattern: "transcription_{date}_{time}.md".to_string(),
             toggle_shortcut: "Alt+Space".to_string(),
             show_window_shortcut: "Alt+H".to_string(),
@@ -34,6 +38,32 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn default_recordings_dir() -> PathBuf {
+        dirs::document_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join("wgo-recordings")
+    }
+
+    pub fn recordings_dir_path(&self) -> PathBuf {
+        let trimmed = self.recordings_dir.trim();
+        if trimmed.is_empty() {
+            return Self::default_recordings_dir();
+        }
+
+        PathBuf::from(trimmed)
+    }
+
+    pub fn ensure_recordings_dir(&self) -> Result<PathBuf, String> {
+        let dir = self.recordings_dir_path();
+        fs::create_dir_all(&dir).map_err(|e| {
+            format!(
+                "Failed to create recordings directory '{}': {e}",
+                dir.display()
+            )
+        })?;
+        Ok(dir)
+    }
+
     pub fn has_api_key(&self) -> bool {
         !self.groq_api_key.trim().is_empty()
     }
@@ -57,6 +87,7 @@ impl AppConfig {
                 merged.groq_api_key = cfg.groq_api_key;
                 merged.microphone_name = cfg.microphone_name;
                 merged.markdown_dir = cfg.markdown_dir;
+                merged.recordings_dir = cfg.recordings_dir;
                 merged.markdown_pattern = cfg.markdown_pattern;
                 if !cfg.toggle_shortcut.trim().is_empty() {
                     merged.toggle_shortcut = cfg.toggle_shortcut;
@@ -91,6 +122,7 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::AppConfig;
+    use std::path::PathBuf;
 
     #[test]
     fn has_api_key_is_false_for_blank_and_whitespace() {
@@ -107,5 +139,27 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.groq_api_key = "  abc123  ".to_string();
         assert!(cfg.has_api_key());
+    }
+
+    #[test]
+    fn recordings_dir_path_uses_fallback_when_config_value_is_blank() {
+        let mut cfg = AppConfig::default();
+        cfg.recordings_dir = "   ".to_string();
+
+        assert_eq!(
+            cfg.recordings_dir_path(),
+            AppConfig::default_recordings_dir()
+        );
+    }
+
+    #[test]
+    fn recordings_dir_path_uses_configured_value_when_present() {
+        let mut cfg = AppConfig::default();
+        cfg.recordings_dir = "/tmp/wgo-recordings-test".to_string();
+
+        assert_eq!(
+            cfg.recordings_dir_path(),
+            PathBuf::from("/tmp/wgo-recordings-test")
+        );
     }
 }

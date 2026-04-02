@@ -26,7 +26,7 @@ fn get_exe_dir() -> PathBuf {
 }
 
 fn get_recordings_dir() -> PathBuf {
-    AppConfig::app_data_dir().join("recordings")
+    AppConfig::load().recordings_dir_path()
 }
 
 fn resolve_audio_file_path(file_path: &str) -> PathBuf {
@@ -76,9 +76,7 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
         .map(mime_for_ext)
         .unwrap_or("application/octet-stream");
 
-    let file_part = Part::bytes(buffer)
-        .file_name(file_name)
-        .mime_str(mime)?;
+    let file_part = Part::bytes(buffer).file_name(file_name).mime_str(mime)?;
 
     let form = Form::new()
         .part("file", file_part)
