@@ -1,6 +1,8 @@
 {
   "groq_api_key": "YOUR_GROQ_API_KEY_HERE",
   "microphone_name": null,
+  "desktop_device_name": null,
+  "audio_source": "MicOnly",
   "markdown_dir": "~/Documents/wgo-transcriptions",
   "markdown_pattern": "transcription_{date}_{time}.md",
   "toggle_shortcut": "Alt+Space",

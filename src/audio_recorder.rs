@@ -1,8 +1,18 @@
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum AudioSource {
+    #[default]
+    MicOnly,
+    DesktopOnly,
+    MicAndDesktop,
+}
 
 const MAX_RECORDING_BYTES: u64 = 20 * 1024 * 1024; // 20 MB — safely under Groq's 25 MB limit
 use std::time::SystemTime;
@@ -34,6 +44,7 @@ fn normalize_input_error(context: &str, err: impl std::fmt::Display) -> String {
 
 pub struct AudioRecorder {
     stream: Option<cpal::Stream>,
+    stream2: Option<cpal::Stream>,
     is_recording: Arc<AtomicBool>,
     is_monitoring: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
@@ -42,12 +53,16 @@ pub struct AudioRecorder {
     writer: Option<Arc<Mutex<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
     pub current_filename: Option<String>,
     device_name: Option<String>,
+    desktop_device_name: Option<String>,
+    pub audio_source: AudioSource,
+    desktop_mix_buf: Arc<Mutex<VecDeque<f32>>>,
 }
 
 impl AudioRecorder {
     pub fn new() -> Self {
         Self {
             stream: None,
+            stream2: None,
             is_recording: Arc::new(AtomicBool::new(false)),
             is_monitoring: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
@@ -56,6 +71,9 @@ impl AudioRecorder {
             writer: None,
             current_filename: None,
             device_name: None,
+            desktop_device_name: None,
+            audio_source: AudioSource::default(),
+            desktop_mix_buf: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -74,8 +92,20 @@ impl AudioRecorder {
         Ok(names)
     }
 
+    pub fn list_desktop_input_devices() -> Result<Vec<String>, String> {
+        Self::list_input_devices()
+    }
+
     pub fn set_device_name(&mut self, device_name: Option<String>) {
         self.device_name = device_name;
+    }
+
+    pub fn set_desktop_device_name(&mut self, name: Option<String>) {
+        self.desktop_device_name = name;
+    }
+
+    pub fn set_audio_source(&mut self, source: AudioSource) {
+        self.audio_source = source;
     }
 
     pub fn is_recording(&self) -> bool {
@@ -116,10 +146,14 @@ impl AudioRecorder {
         (sample as i32 - i16::MAX as i32 - 1) as i16
     }
 
-    fn get_input_device(&self) -> Result<cpal::Device, String> {
+    fn get_named_input_device(
+        &self,
+        name: &Option<String>,
+        role: &str,
+    ) -> Result<cpal::Device, String> {
         let host = cpal::default_host();
 
-        if let Some(ref device_name) = self.device_name {
+        if let Some(device_name) = name {
             let found_device =
                 host.input_devices().ok().and_then(|devices| {
                     devices
@@ -137,11 +171,11 @@ impl AudioRecorder {
 
             match found_device {
                 Some(device) => {
-                    println!("Using selected device: {}", device_name);
+                    println!("Using selected {role} device: {device_name}");
                     Ok(device)
                 }
                 None => {
-                    eprintln!("Selected device '{}' not found, using default", device_name);
+                    eprintln!("Selected {role} device '{device_name}' not found, using default");
                     host.default_input_device()
                         .ok_or_else(|| "No input device available".to_string())
                 }
@@ -150,11 +184,31 @@ impl AudioRecorder {
             match host.default_input_device() {
                 Some(device) => {
                     if let Ok(name) = device.name() {
-                        println!("Using default input device: {}", name);
+                        println!("Using default {role} device: {name}");
                     }
                     Ok(device)
                 }
                 None => Err("No input device available".to_string()),
+            }
+        }
+    }
+
+    fn get_recording_devices(&self) -> Result<(cpal::Device, Option<cpal::Device>), String> {
+        match self.audio_source {
+            AudioSource::MicOnly => {
+                let mic = self.get_named_input_device(&self.device_name, "microphone")?;
+                Ok((mic, None))
+            }
+            AudioSource::DesktopOnly => {
+                let desktop =
+                    self.get_named_input_device(&self.desktop_device_name, "desktop")?;
+                Ok((desktop, None))
+            }
+            AudioSource::MicAndDesktop => {
+                let mic = self.get_named_input_device(&self.device_name, "microphone")?;
+                let desktop =
+                    self.get_named_input_device(&self.desktop_device_name, "desktop")?;
+                Ok((mic, Some(desktop)))
             }
         }
     }
@@ -168,7 +222,7 @@ impl AudioRecorder {
             self.stop_monitoring()?;
         }
 
-        let device = self.get_input_device()?;
+        let (device, desktop_device) = self.get_recording_devices()?;
 
         let supported = match device.default_input_config() {
             Ok(config) => {
@@ -202,6 +256,13 @@ impl AudioRecorder {
         };
         let sample_format = supported.sample_format();
         let num_input_channels = stream_config.channels as usize;
+        let should_mix_desktop = matches!(self.audio_source, AudioSource::MicAndDesktop);
+
+        if should_mix_desktop {
+            if let Ok(mut q) = self.desktop_mix_buf.lock() {
+                q.clear();
+            }
+        }
 
         // Always write mono — halves (or more) the file size vs stereo.
         let spec = WavSpec {
@@ -237,6 +298,7 @@ impl AudioRecorder {
         let is_paused = self.is_paused.clone();
         let level_milli = self.level_milli.clone();
         let bytes_written = self.bytes_written.clone();
+        let desktop_mix_buf = self.desktop_mix_buf.clone();
 
         let stream = match sample_format {
             cpal::SampleFormat::F32 => {
@@ -245,6 +307,7 @@ impl AudioRecorder {
                 let is_paused_clone = is_paused.clone();
                 let level_milli_clone = level_milli.clone();
                 let bytes_written_clone = bytes_written.clone();
+                let desktop_mix_buf_clone = desktop_mix_buf.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -264,7 +327,21 @@ impl AudioRecorder {
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
                                 for frame in data.chunks(num_input_channels) {
-                                    let mono = frame.iter().sum::<f32>() / frame.len() as f32;
+                                    let mic = frame.iter().sum::<f32>() / frame.len() as f32;
+                                    let desktop = if should_mix_desktop {
+                                        desktop_mix_buf_clone
+                                            .lock()
+                                            .ok()
+                                            .and_then(|mut q| q.pop_front())
+                                            .unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let mono = if should_mix_desktop {
+                                        ((mic + desktop) * 0.5).clamp(-1.0, 1.0)
+                                    } else {
+                                        mic
+                                    };
                                     peak = peak.max(mono.abs());
                                     let _ = writer.write_sample(Self::i16_from_f32(mono));
                                 }
@@ -289,6 +366,7 @@ impl AudioRecorder {
                 let is_paused_clone = is_paused.clone();
                 let level_milli_clone = level_milli.clone();
                 let bytes_written_clone = bytes_written.clone();
+                let desktop_mix_buf_clone = desktop_mix_buf.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -308,10 +386,24 @@ impl AudioRecorder {
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
                                 for frame in data.chunks(num_input_channels) {
-                                    let mono = frame.iter().map(|&s| s as f32).sum::<f32>()
+                                    let mic = frame.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
                                         / frame.len() as f32;
-                                    peak = peak.max((mono / i16::MAX as f32).abs());
-                                    let _ = writer.write_sample(mono as i16);
+                                    let desktop = if should_mix_desktop {
+                                        desktop_mix_buf_clone
+                                            .lock()
+                                            .ok()
+                                            .and_then(|mut q| q.pop_front())
+                                            .unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let mono = if should_mix_desktop {
+                                        ((mic + desktop) * 0.5).clamp(-1.0, 1.0)
+                                    } else {
+                                        mic
+                                    };
+                                    peak = peak.max(mono.abs());
+                                    let _ = writer.write_sample(Self::i16_from_f32(mono));
                                 }
                                 bytes_written_clone.fetch_add(
                                     (data.len() / num_input_channels * 2) as u64,
@@ -334,6 +426,7 @@ impl AudioRecorder {
                 let is_paused_clone = is_paused.clone();
                 let level_milli_clone = level_milli.clone();
                 let bytes_written_clone = bytes_written.clone();
+                let desktop_mix_buf_clone = desktop_mix_buf.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -353,13 +446,27 @@ impl AudioRecorder {
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
                                 for frame in data.chunks(num_input_channels) {
-                                    let mono = frame
+                                    let mic = frame
                                         .iter()
-                                        .map(|&s| Self::i16_from_u16(s) as f32)
+                                        .map(|&s| Self::i16_from_u16(s) as f32 / i16::MAX as f32)
                                         .sum::<f32>()
                                         / frame.len() as f32;
-                                    peak = peak.max((mono / i16::MAX as f32).abs());
-                                    let _ = writer.write_sample(mono as i16);
+                                    let desktop = if should_mix_desktop {
+                                        desktop_mix_buf_clone
+                                            .lock()
+                                            .ok()
+                                            .and_then(|mut q| q.pop_front())
+                                            .unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let mono = if should_mix_desktop {
+                                        ((mic + desktop) * 0.5).clamp(-1.0, 1.0)
+                                    } else {
+                                        mic
+                                    };
+                                    peak = peak.max(mono.abs());
+                                    let _ = writer.write_sample(Self::i16_from_f32(mono));
                                 }
                                 bytes_written_clone.fetch_add(
                                     (data.len() / num_input_channels * 2) as u64,
@@ -386,10 +493,111 @@ impl AudioRecorder {
             ));
         }
 
+        let desktop_stream = if should_mix_desktop {
+            let Some(desktop_device) = desktop_device else {
+                return Err("Desktop audio source requires a desktop input device".to_string());
+            };
+
+            let desktop_supported = desktop_device.default_input_config().map_err(|err| {
+                normalize_input_error("Failed to get default desktop audio configuration", err)
+            })?;
+
+            let desktop_sample_rate = stream_config.sample_rate;
+            let desktop_stream_config = desktop_device
+                .supported_input_configs()
+                .ok()
+                .and_then(|mut cfgs| {
+                    cfgs.find(|c| {
+                        c.min_sample_rate() <= desktop_sample_rate
+                            && c.max_sample_rate() >= desktop_sample_rate
+                    })
+                    .map(|c| c.with_sample_rate(desktop_sample_rate).config())
+                })
+                .unwrap_or_else(|| desktop_supported.config());
+            let desktop_channels = desktop_stream_config.channels as usize;
+            let desktop_mix_buf_clone = self.desktop_mix_buf.clone();
+
+            let stream2 = match desktop_supported.sample_format() {
+                cpal::SampleFormat::F32 => desktop_device
+                    .build_input_stream(
+                        &desktop_stream_config,
+                        move |data: &[f32], _| {
+                            if let Ok(mut q) = desktop_mix_buf_clone.lock() {
+                                for frame in data.chunks(desktop_channels) {
+                                    let mono = frame.iter().sum::<f32>() / frame.len() as f32;
+                                    if q.len() >= 32768 {
+                                        q.pop_front();
+                                    }
+                                    q.push_back(mono.clamp(-1.0, 1.0));
+                                }
+                            }
+                        },
+                        move |err| eprintln!("Desktop stream error: {}", err),
+                        None,
+                    )
+                    .map_err(|e| normalize_input_error("Failed to open desktop audio stream", e))?,
+                cpal::SampleFormat::I16 => desktop_device
+                    .build_input_stream(
+                        &desktop_stream_config,
+                        move |data: &[i16], _| {
+                            if let Ok(mut q) = desktop_mix_buf_clone.lock() {
+                                for frame in data.chunks(desktop_channels) {
+                                    let mono = frame
+                                        .iter()
+                                        .map(|&s| s as f32 / i16::MAX as f32)
+                                        .sum::<f32>()
+                                        / frame.len() as f32;
+                                    if q.len() >= 32768 {
+                                        q.pop_front();
+                                    }
+                                    q.push_back(mono.clamp(-1.0, 1.0));
+                                }
+                            }
+                        },
+                        move |err| eprintln!("Desktop stream error: {}", err),
+                        None,
+                    )
+                    .map_err(|e| normalize_input_error("Failed to open desktop audio stream", e))?,
+                cpal::SampleFormat::U16 => desktop_device
+                    .build_input_stream(
+                        &desktop_stream_config,
+                        move |data: &[u16], _| {
+                            if let Ok(mut q) = desktop_mix_buf_clone.lock() {
+                                for frame in data.chunks(desktop_channels) {
+                                    let mono = frame
+                                        .iter()
+                                        .map(|&s| Self::i16_from_u16(s) as f32 / i16::MAX as f32)
+                                        .sum::<f32>()
+                                        / frame.len() as f32;
+                                    if q.len() >= 32768 {
+                                        q.pop_front();
+                                    }
+                                    q.push_back(mono.clamp(-1.0, 1.0));
+                                }
+                            }
+                        },
+                        move |err| eprintln!("Desktop stream error: {}", err),
+                        None,
+                    )
+                    .map_err(|e| normalize_input_error("Failed to open desktop audio stream", e))?,
+                other => {
+                    return Err(format!("Unsupported desktop sample format: {other:?}"));
+                }
+            };
+
+            stream2
+                .play()
+                .map_err(|err| normalize_input_error("Failed to start desktop stream", err))?;
+            Some(stream2)
+        } else {
+            None
+        };
+
         self.is_recording.store(true, Ordering::SeqCst);
         self.is_monitoring.store(false, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
         self.stream = Some(stream);
+        self.stream2 = desktop_stream;
 
         println!("Recording started: {}", filename);
         println!("Speak now...");
@@ -405,7 +613,7 @@ impl AudioRecorder {
             return Ok(());
         }
 
-        let device = self.get_input_device()?;
+        let device = self.get_named_input_device(&self.device_name, "microphone")?;
 
         let supported = device.default_input_config().map_err(|err| {
             normalize_input_error("Failed to get default microphone configuration", err)
@@ -521,6 +729,7 @@ impl AudioRecorder {
             .map_err(|err| normalize_input_error("Failed to start microphone stream", err))?;
 
         self.stream = Some(stream);
+        self.stream2 = None;
         self.writer = None;
         self.current_filename = None;
         self.is_paused.store(false, Ordering::SeqCst);
@@ -541,6 +750,7 @@ impl AudioRecorder {
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         self.stream = None;
+        self.stream2 = None;
         self.writer = None;
         self.current_filename = None;
         Ok(())
@@ -576,6 +786,10 @@ impl AudioRecorder {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         self.stream = None;
+        self.stream2 = None;
+        if let Ok(mut q) = self.desktop_mix_buf.lock() {
+            q.clear();
+        }
 
         let completed_filename = self.current_filename.take();
 
