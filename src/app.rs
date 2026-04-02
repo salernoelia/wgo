@@ -65,10 +65,13 @@ enum UiEvent {
     },
     UpdateAvailable {
         version: String,
-        url: String,
+        html_url: String,
+        download_url: String,
     },
     UpToDate,
     UpdateCheckFailed(String),
+    UpdateApplied,
+    UpdateInstallFailed(String),
 }
 
 #[derive(Default)]
@@ -78,9 +81,12 @@ enum UpdateState {
     Checking,
     UpdateAvailable {
         version: String,
-        url: String,
+        html_url: String,
+        download_url: String,
     },
     UpToDate,
+    Updating,
+    UpdateDone,
     Failed(String),
 }
 
@@ -98,6 +104,8 @@ impl WgoApp {
         let (ui_event_tx, ui_event_rx) = mpsc::channel();
 
         let history = TranscriptionHistory::load();
+
+        spawn_update_check(ui_event_tx.clone());
 
         Self {
             recorder,
@@ -119,7 +127,7 @@ impl WgoApp {
             status_line: "Ready".to_string(),
             last_transcription: String::new(),
             last_failed_audio_path: None,
-            update_state: UpdateState::Idle,
+            update_state: UpdateState::Checking,
             history,
         }
     }
@@ -281,8 +289,16 @@ impl WgoApp {
                     self.last_failed_audio_path = Some(audio_path.clone());
                     self.status_line = format!("{error} | You can retry for {audio_path}");
                 }
-                UiEvent::UpdateAvailable { version, url } => {
-                    self.update_state = UpdateState::UpdateAvailable { version, url };
+                UiEvent::UpdateAvailable {
+                    version,
+                    html_url,
+                    download_url,
+                } => {
+                    self.update_state = UpdateState::UpdateAvailable {
+                        version,
+                        html_url,
+                        download_url,
+                    };
                 }
                 UiEvent::UpToDate => {
                     self.update_state = UpdateState::UpToDate;
@@ -290,52 +306,36 @@ impl WgoApp {
                 UiEvent::UpdateCheckFailed(err) => {
                     self.update_state = UpdateState::Failed(err);
                 }
+                UiEvent::UpdateApplied => {
+                    self.update_state = UpdateState::UpdateDone;
+                    self.status_line =
+                        "Update installed. Restart wgo to use the new version.".to_string();
+                }
+                UiEvent::UpdateInstallFailed(err) => {
+                    self.update_state = UpdateState::Failed(err.clone());
+                    self.status_line = format!("Update failed: {err}");
+                }
             }
         }
     }
 
     fn check_for_updates(&mut self) {
         self.update_state = UpdateState::Checking;
+        spawn_update_check(self.ui_event_tx.clone());
+    }
+
+    fn perform_self_update(&mut self, download_url: String) {
+        self.update_state = UpdateState::Updating;
+        self.status_line = "Downloading update...".to_string();
         let ui_tx = self.ui_event_tx.clone();
 
         std::thread::spawn(move || {
-            let result = (|| -> Result<(String, String), String> {
-                let client = reqwest::blocking::Client::builder()
-                    .user_agent("wgo-updater")
-                    .build()
-                    .map_err(|e| e.to_string())?;
-                let resp: serde_json::Value = client
-                    .get("https://api.github.com/repos/salernoelia/wgo/releases/latest")
-                    .send()
-                    .map_err(|e| e.to_string())?
-                    .json()
-                    .map_err(|e| e.to_string())?;
-                let tag = resp["tag_name"]
-                    .as_str()
-                    .ok_or("Missing tag_name")?
-                    .trim_start_matches('v')
-                    .to_string();
-                let url = resp["html_url"]
-                    .as_str()
-                    .ok_or("Missing html_url")?
-                    .to_string();
-                Ok((tag, url))
-            })();
-
-            match result {
-                Ok((latest, url)) => {
-                    let current = env!("CARGO_PKG_VERSION");
-                    if latest != current {
-                        let _ = ui_tx.send(UiEvent::UpdateAvailable {
-                            version: latest,
-                            url,
-                        });
-                    } else {
-                        let _ = ui_tx.send(UiEvent::UpToDate);
-                    }
+            match do_self_update(&download_url) {
+                Ok(()) => {
+                    let _ = ui_tx.send(UiEvent::UpdateApplied);
                 }
                 Err(e) => {
-                    let _ = ui_tx.send(UiEvent::UpdateCheckFailed(e));
+                    let _ = ui_tx.send(UiEvent::UpdateInstallFailed(e));
                 }
             }
         });
@@ -778,18 +778,49 @@ impl WgoApp {
         ui.separator();
         ui.add_space(8.0);
 
+        // Collect update state data before drawing to avoid borrow conflicts.
+        enum UpdateAction {
+            None,
+            CheckUpdates,
+            PerformUpdate(String),
+        }
+        let busy = matches!(
+            self.update_state,
+            UpdateState::Checking | UpdateState::Updating
+        );
+        let update_info: Option<(String, String, String)> =
+            if let UpdateState::UpdateAvailable {
+                version,
+                html_url,
+                download_url,
+            } = &self.update_state
+            {
+                Some((version.clone(), html_url.clone(), download_url.clone()))
+            } else {
+                None
+            };
+        let update_err: Option<String> = if let UpdateState::Failed(e) = &self.update_state {
+            Some(e.clone())
+        } else {
+            None
+        };
+
+        let mut action = UpdateAction::None;
         ui.horizontal(|ui| {
-            let checking = matches!(self.update_state, UpdateState::Checking);
             if ui
-                .add_enabled(!checking, egui::Button::new("Check for updates"))
+                .add_enabled(!busy, egui::Button::new("Check for updates"))
                 .clicked()
             {
-                self.check_for_updates();
+                action = UpdateAction::CheckUpdates;
             }
             match &self.update_state {
                 UpdateState::Idle => {}
                 UpdateState::Checking => {
                     ui.spinner();
+                    ui.label(
+                        egui::RichText::new("Checking...")
+                            .color(ui.visuals().weak_text_color()),
+                    );
                 }
                 UpdateState::UpToDate => {
                     ui.label(
@@ -800,21 +831,53 @@ impl WgoApp {
                         .color(ui.visuals().weak_text_color()),
                     );
                 }
-                UpdateState::UpdateAvailable { version, url } => {
-                    ui.label(
-                        egui::RichText::new(format!("v{version} available!"))
-                            .color(egui::Color32::from_rgb(240, 180, 60)),
-                    );
-                    ui.hyperlink_to("Download", url);
+                UpdateState::UpdateAvailable { .. } => {
+                    if let Some((version, html_url, download_url)) = &update_info {
+                        ui.label(
+                            egui::RichText::new(format!("v{version} available!"))
+                                .color(egui::Color32::from_rgb(240, 180, 60)),
+                        );
+                        ui.hyperlink_to("Release notes", html_url);
+                        if !download_url.is_empty()
+                            && ui
+                                .button(
+                                    egui::RichText::new("Update now")
+                                        .color(egui::Color32::from_rgb(120, 217, 120)),
+                                )
+                                .clicked()
+                        {
+                            action = UpdateAction::PerformUpdate(download_url.clone());
+                        }
+                    }
                 }
-                UpdateState::Failed(err) => {
+                UpdateState::Updating => {
+                    ui.spinner();
                     ui.label(
-                        egui::RichText::new(format!("Update check failed: {err}"))
-                            .color(ui.visuals().error_fg_color),
+                        egui::RichText::new("Installing update...")
+                            .color(ui.visuals().weak_text_color()),
                     );
+                }
+                UpdateState::UpdateDone => {
+                    ui.label(
+                        egui::RichText::new("Restart to apply update")
+                            .color(egui::Color32::from_rgb(120, 217, 120)),
+                    );
+                }
+                UpdateState::Failed(_) => {
+                    if let Some(err) = &update_err {
+                        ui.label(
+                            egui::RichText::new(format!("Update failed: {err}"))
+                                .color(ui.visuals().error_fg_color),
+                        );
+                    }
                 }
             }
         });
+        match action {
+            UpdateAction::CheckUpdates => self.check_for_updates(),
+            UpdateAction::PerformUpdate(url) => self.perform_self_update(url),
+            UpdateAction::None => {}
+        }
     }
 
     fn controls_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
@@ -857,6 +920,39 @@ impl WgoApp {
         });
 
         if !compact {
+            let update_banner = if let UpdateState::UpdateAvailable {
+                version,
+                download_url,
+                ..
+            } = &self.update_state
+            {
+                Some((version.clone(), download_url.clone()))
+            } else {
+                None
+            };
+            if let Some((version, download_url)) = update_banner {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("v{version} available"))
+                            .color(egui::Color32::from_rgb(240, 180, 60)),
+                    );
+                    if !download_url.is_empty() {
+                        if ui
+                            .button(
+                                egui::RichText::new("Update now")
+                                    .color(egui::Color32::from_rgb(120, 217, 120)),
+                            )
+                            .clicked()
+                        {
+                            self.perform_self_update(download_url);
+                        }
+                    } else if ui.small_button("See release").clicked() {
+                        self.active_tab = AppTab::Settings;
+                    }
+                });
+            }
+
             ui.add_space(8.0);
             ui.label(format!(
                 "Global shortcuts: {} = start/stop, {} = show window",
@@ -1121,6 +1217,157 @@ impl eframe::App for WgoApp {
             }
         });
     }
+}
+
+fn platform_asset_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "wgo-macos.app.tar.gz"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "wgo-linux"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "wgo-windows.exe"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        ""
+    }
+}
+
+fn spawn_update_check(ui_tx: mpsc::Sender<UiEvent>) {
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(String, String, String), String> {
+            let client = reqwest::blocking::Client::builder()
+                .user_agent("wgo-updater")
+                .build()
+                .map_err(|e| e.to_string())?;
+            let resp: serde_json::Value = client
+                .get("https://api.github.com/repos/salernoelia/wgo/releases/latest")
+                .send()
+                .map_err(|e| e.to_string())?
+                .json()
+                .map_err(|e| e.to_string())?;
+            let tag = resp["tag_name"]
+                .as_str()
+                .ok_or("Missing tag_name")?
+                .trim_start_matches('v')
+                .to_string();
+            let html_url = resp["html_url"]
+                .as_str()
+                .ok_or("Missing html_url")?
+                .to_string();
+            let asset_name = platform_asset_name();
+            let download_url = resp["assets"]
+                .as_array()
+                .and_then(|assets| {
+                    assets.iter().find(|a| {
+                        a["name"].as_str().map(|n| n == asset_name).unwrap_or(false)
+                    })
+                })
+                .and_then(|a| a["browser_download_url"].as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok((tag, html_url, download_url))
+        })();
+
+        match result {
+            Ok((latest, html_url, download_url)) => {
+                let current = env!("CARGO_PKG_VERSION");
+                if latest != current {
+                    let _ = ui_tx.send(UiEvent::UpdateAvailable {
+                        version: latest,
+                        html_url,
+                        download_url,
+                    });
+                } else {
+                    let _ = ui_tx.send(UiEvent::UpToDate);
+                }
+            }
+            Err(e) => {
+                let _ = ui_tx.send(UiEvent::UpdateCheckFailed(e));
+            }
+        }
+    });
+}
+
+fn do_self_update(download_url: &str) -> Result<(), String> {
+    let tmp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let archive_path = tmp_dir.path().join("wgo-update.tar.gz");
+        let mut archive_file =
+            std::fs::File::create(&archive_path).map_err(|e| e.to_string())?;
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("wgo-updater")
+            .build()
+            .map_err(|e| e.to_string())?;
+        let bytes = client
+            .get(download_url)
+            .send()
+            .and_then(|r| r.bytes())
+            .map_err(|e| e.to_string())?;
+        std::io::copy(&mut bytes.as_ref(), &mut archive_file).map_err(|e| e.to_string())?;
+
+        let file = std::fs::File::open(&archive_path).map_err(|e| e.to_string())?;
+        let gz = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(gz);
+
+        let extract_to = tmp_dir.path().join("wgo_bin");
+        for entry in archive.entries().map_err(|e| e.to_string())? {
+            let mut entry = entry.map_err(|e| e.to_string())?;
+            let entry_path = entry.path().map_err(|e| e.to_string())?;
+            let file_name = entry_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if file_name == "wgo" {
+                entry
+                    .unpack(&extract_to)
+                    .map_err(|e| e.to_string())?;
+                break;
+            }
+        }
+
+        if !extract_to.exists() {
+            return Err("Could not find wgo binary inside update archive".to_string());
+        }
+
+        self_replace::self_replace(&extract_to).map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let bin_path = tmp_dir.path().join("wgo_new");
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("wgo-updater")
+            .build()
+            .map_err(|e| e.to_string())?;
+        let bytes = client
+            .get(download_url)
+            .send()
+            .and_then(|r| r.bytes())
+            .map_err(|e| e.to_string())?;
+        std::fs::write(&bin_path, &bytes).map_err(|e| e.to_string())?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&bin_path)
+                .map_err(|e| e.to_string())?
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin_path, perms).map_err(|e| e.to_string())?;
+        }
+
+        self_replace::self_replace(&bin_path).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 fn key_event_to_shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<String> {
