@@ -941,15 +941,16 @@ impl WgoApp {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {
             let Some(path) = file.path else { continue };
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-                .unwrap_or_default();
+            let path_string = path.to_string_lossy().to_string();
 
-            if !["mp3", "wav", "m4a", "ogg", "flac", "webm"].contains(&ext.as_str()) {
+            if !crate::groq_request::is_supported_media_file(&path_string) {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase())
+                    .unwrap_or_default();
                 self.status_line = format!(
-                    "Unsupported file type: .{ext}. Supported: mp3, wav, m4a, ogg, flac, webm"
+                    "Unsupported file type: .{ext}. Supported: mp3, wav, m4a, ogg, flac, webm, mp4, mov, m4v, mkv, avi, mpg"
                 );
                 continue;
             }
@@ -965,8 +966,12 @@ impl WgoApp {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.to_string_lossy().to_string());
-            self.status_line = format!("Transcribing {name}...");
-            self.start_transcription_job(path.to_string_lossy().to_string());
+            self.status_line = if crate::groq_request::is_video_file(&path_string) {
+                format!("Extracting audio from video: {name}...")
+            } else {
+                format!("Transcribing {name}...")
+            };
+            self.start_transcription_job(path_string);
         }
     }
 
@@ -985,7 +990,7 @@ impl WgoApp {
         painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
 
         let center = screen.center();
-        let label = egui::RichText::new("Drop audio file to transcribe")
+        let label = egui::RichText::new("Drop audio or video file to transcribe")
             .size(22.0)
             .color(egui::Color32::WHITE);
         painter.text(
