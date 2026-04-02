@@ -657,18 +657,37 @@ impl WgoApp {
         });
 
         ui.add_space(8.0);
+
         ui.label("Markdown output folder");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.config.markdown_dir)
-                .hint_text("/path/to/transcriptions"),
-        );
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.config.markdown_dir)
+                    .hint_text("/path/to/transcriptions"),
+            );
+            if ui.button("Open Directory").clicked() {
+                match &self.config.markdown_dir {
+                    path if path.trim().is_empty() => {
+                        self.status_line = "Markdown directory is not set.".to_string();
+                    }
+                    path => {
+                        let result = crate::utils::open_folder_in_file_explorer(path);
+                        if let Err(err) = result {
+                            self.status_line = format!("Failed to open directory: {err}");
+                        }
+                    }
+                }
+            }
+        });
 
         ui.add_space(8.0);
         ui.label("Markdown file name pattern");
+
         ui.add(
             egui::TextEdit::singleline(&mut self.config.markdown_pattern)
                 .hint_text("transcription_{date}_{time}.md"),
         );
+
         ui.small("Tokens: {date}, {time}, {timestamp}");
 
         ui.add_space(8.0);

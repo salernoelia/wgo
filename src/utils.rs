@@ -16,6 +16,19 @@ pub fn copy_to_clipboard(text: &str) {
     }
 }
 
+pub fn open_folder_in_file_explorer(path: &str) -> Result<(), std::io::Error> {
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("explorer").arg(path).spawn()?;
+
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open").arg(path).spawn()?;
+
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("xdg-open").arg(path).spawn()?;
+
+    Ok(())
+}
+
 pub fn open_microphone_permissions_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
