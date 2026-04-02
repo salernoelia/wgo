@@ -307,7 +307,10 @@ impl WgoApp {
                 Ok((latest, url)) => {
                     let current = env!("CARGO_PKG_VERSION");
                     if latest != current {
-                        let _ = ui_tx.send(UiEvent::UpdateAvailable { version: latest, url });
+                        let _ = ui_tx.send(UiEvent::UpdateAvailable {
+                            version: latest,
+                            url,
+                        });
                     } else {
                         let _ = ui_tx.send(UiEvent::UpToDate);
                     }
@@ -600,6 +603,15 @@ impl WgoApp {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        egui::Area::new(egui::Id::new("save_btn"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 84.0))
+            .show(ui.ctx(), |ui| {
+                let btn =
+                    egui::Button::new("Save settings").fill(egui::Color32::from_rgb(120, 217, 120));
+                if ui.add(btn).clicked() {
+                    self.save_settings();
+                }
+            });
         ui.label("Groq API key");
         ui.add(
             egui::TextEdit::singleline(&mut self.config.groq_api_key)
@@ -698,12 +710,6 @@ impl WgoApp {
             ui.small(label);
         }
 
-        ui.add_space(12.0);
-        if ui.button("Save settings").clicked() {
-            self.save_settings();
-        }
-
-        ui.add_space(16.0);
         ui.separator();
         ui.add_space(8.0);
 
@@ -722,8 +728,11 @@ impl WgoApp {
                 }
                 UpdateState::UpToDate => {
                     ui.label(
-                        egui::RichText::new(format!("v{} is up to date", env!("CARGO_PKG_VERSION")))
-                            .color(ui.visuals().weak_text_color()),
+                        egui::RichText::new(format!(
+                            "v{} is up to date",
+                            env!("CARGO_PKG_VERSION")
+                        ))
+                        .color(ui.visuals().weak_text_color()),
                     );
                 }
                 UpdateState::UpdateAvailable { version, url } => {
