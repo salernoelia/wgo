@@ -200,14 +200,12 @@ impl AudioRecorder {
                 Ok((mic, None))
             }
             AudioSource::DesktopOnly => {
-                let desktop =
-                    self.get_named_input_device(&self.desktop_device_name, "desktop")?;
+                let desktop = self.get_named_input_device(&self.desktop_device_name, "desktop")?;
                 Ok((desktop, None))
             }
             AudioSource::MicAndDesktop => {
                 let mic = self.get_named_input_device(&self.device_name, "microphone")?;
-                let desktop =
-                    self.get_named_input_device(&self.desktop_device_name, "desktop")?;
+                let desktop = self.get_named_input_device(&self.desktop_device_name, "desktop")?;
                 Ok((mic, Some(desktop)))
             }
         }
@@ -321,7 +319,9 @@ impl AudioRecorder {
                             }
                             if bytes_written_clone.load(Ordering::Relaxed) >= MAX_RECORDING_BYTES {
                                 is_recording_clone.store(false, Ordering::SeqCst);
-                                eprintln!("Recording stopped: reached {MAX_RECORDING_BYTES} byte limit");
+                                eprintln!(
+                                    "Recording stopped: reached {MAX_RECORDING_BYTES} byte limit"
+                                );
                                 return;
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
@@ -380,13 +380,18 @@ impl AudioRecorder {
                             }
                             if bytes_written_clone.load(Ordering::Relaxed) >= MAX_RECORDING_BYTES {
                                 is_recording_clone.store(false, Ordering::SeqCst);
-                                eprintln!("Recording stopped: reached {MAX_RECORDING_BYTES} byte limit");
+                                eprintln!(
+                                    "Recording stopped: reached {MAX_RECORDING_BYTES} byte limit"
+                                );
                                 return;
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
                                 for frame in data.chunks(num_input_channels) {
-                                    let mic = frame.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
+                                    let mic = frame
+                                        .iter()
+                                        .map(|&s| s as f32 / i16::MAX as f32)
+                                        .sum::<f32>()
                                         / frame.len() as f32;
                                     let desktop = if should_mix_desktop {
                                         desktop_mix_buf_clone
@@ -440,7 +445,9 @@ impl AudioRecorder {
                             }
                             if bytes_written_clone.load(Ordering::Relaxed) >= MAX_RECORDING_BYTES {
                                 is_recording_clone.store(false, Ordering::SeqCst);
-                                eprintln!("Recording stopped: reached {MAX_RECORDING_BYTES} byte limit");
+                                eprintln!(
+                                    "Recording stopped: reached {MAX_RECORDING_BYTES} byte limit"
+                                );
                                 return;
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
