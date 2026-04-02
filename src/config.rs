@@ -2,10 +2,16 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::audio_recorder::AudioSource;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub groq_api_key: String,
     pub microphone_name: Option<String>,
+    #[serde(default)]
+    pub desktop_device_name: Option<String>,
+    #[serde(default)]
+    pub audio_source: AudioSource,
     pub markdown_dir: String,
     pub recordings_dir: String,
     pub markdown_pattern: String,
@@ -28,6 +34,8 @@ impl Default for AppConfig {
         Self {
             groq_api_key: String::new(),
             microphone_name: None,
+            desktop_device_name: None,
+            audio_source: AudioSource::default(),
             markdown_dir: default_md_dir,
             recordings_dir: default_recordings_dir,
             markdown_pattern: "transcription_{date}_{time}.md".to_string(),
@@ -44,6 +52,8 @@ impl AppConfig {
         let mut merged = Self::default();
         merged.groq_api_key = cfg.groq_api_key;
         merged.microphone_name = cfg.microphone_name;
+        merged.desktop_device_name = cfg.desktop_device_name;
+        merged.audio_source = cfg.audio_source;
         merged.markdown_dir = cfg.markdown_dir;
         merged.recordings_dir = cfg.recordings_dir;
         merged.markdown_pattern = cfg.markdown_pattern;

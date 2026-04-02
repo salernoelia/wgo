@@ -1,4 +1,4 @@
-use crate::audio_recorder::AudioRecorder;
+use crate::audio_recorder::{AudioRecorder, AudioSource};
 use crate::config::AppConfig;
 use crate::shortcut_detector::{is_accessibility_trusted, HotkeyBindings, HotkeyCommand, HotkeyRuntime};
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
@@ -22,7 +22,10 @@ pub struct WgoApp {
     config: AppConfig,
     hotkey_runtime: HotkeyRuntime,
     microphones: Vec<String>,
+    desktop_devices: Vec<String>,
     selected_microphone: Option<String>,
+    selected_desktop_device: Option<String>,
+    selected_audio_source: AudioSource,
     pending_toggle_shortcut: String,
     pending_show_shortcut: String,
     pending_hold_key: String,
@@ -100,9 +103,12 @@ impl WgoApp {
 
         if let Ok(mut rec) = recorder.lock() {
             rec.set_device_name(config.microphone_name.clone());
+            rec.set_desktop_device_name(config.desktop_device_name.clone());
+            rec.set_audio_source(config.audio_source.clone());
         }
 
         let microphones = AudioRecorder::list_input_devices().unwrap_or_default();
+        let desktop_devices = AudioRecorder::list_desktop_input_devices().unwrap_or_default();
 
         let (ui_event_tx, ui_event_rx) = mpsc::channel();
 
@@ -114,6 +120,8 @@ impl WgoApp {
             recorder,
             hotkey_runtime,
             selected_microphone: config.microphone_name.clone(),
+            selected_desktop_device: config.desktop_device_name.clone(),
+            selected_audio_source: config.audio_source.clone(),
             pending_toggle_shortcut: config.toggle_shortcut.clone(),
             pending_show_shortcut: config.show_window_shortcut.clone(),
             pending_hold_key: config.hold_to_record_key.clone().unwrap_or_default(),
@@ -121,6 +129,7 @@ impl WgoApp {
             recording_by_hold: false,
             config,
             microphones,
+            desktop_devices,
             hotkey_rx,
             ui_event_rx,
             ui_event_tx,
@@ -444,10 +453,24 @@ impl WgoApp {
 
     fn refresh_microphones(&mut self) {
         self.microphones = AudioRecorder::list_input_devices().unwrap_or_default();
+        self.desktop_devices = AudioRecorder::list_desktop_input_devices().unwrap_or_default();
+    }
+
+    fn sync_recorder_audio_selection(&self) -> Result<(), String> {
+        let mut recorder = self
+            .recorder
+            .lock()
+            .map_err(|_| "Failed to lock recorder".to_string())?;
+        recorder.set_device_name(self.selected_microphone.clone());
+        recorder.set_desktop_device_name(self.selected_desktop_device.clone());
+        recorder.set_audio_source(self.selected_audio_source.clone());
+        Ok(())
     }
 
     fn save_settings(&mut self) {
         self.config.microphone_name = self.selected_microphone.clone();
+        self.config.desktop_device_name = self.selected_desktop_device.clone();
+        self.config.audio_source = self.selected_audio_source.clone();
         self.config.toggle_shortcut = self.pending_toggle_shortcut.clone();
         self.config.show_window_shortcut = self.pending_show_shortcut.clone();
         self.config.hold_to_record_key = if self.pending_hold_key.trim().is_empty() {
@@ -457,6 +480,8 @@ impl WgoApp {
         };
         if let Ok(mut rec) = self.recorder.lock() {
             rec.set_device_name(self.config.microphone_name.clone());
+            rec.set_desktop_device_name(self.config.desktop_device_name.clone());
+            rec.set_audio_source(self.config.audio_source.clone());
         }
 
         match self.config.save() {
@@ -481,6 +506,11 @@ impl WgoApp {
             return;
         }
 
+        if let Err(err) = self.sync_recorder_audio_selection() {
+            self.status_line = err;
+            return;
+        }
+
         let start_result = match self.recorder.lock() {
             Ok(mut recorder) => recorder.start_recording(),
             Err(_) => {
@@ -501,6 +531,11 @@ impl WgoApp {
     }
 
     fn toggle_microphone_test(&mut self) {
+        if let Err(err) = self.sync_recorder_audio_selection() {
+            self.status_line = err;
+            return;
+        }
+
         let result = match self.recorder.lock() {
             Ok(mut recorder) => {
                 if recorder.is_monitoring() {
@@ -526,6 +561,11 @@ impl WgoApp {
         if self.is_recording() {
             self.status_line =
                 "Stop the active recording before requesting microphone permissions.".to_string();
+            return;
+        }
+
+        if let Err(err) = self.sync_recorder_audio_selection() {
+            self.status_line = err;
             return;
         }
 
@@ -683,6 +723,32 @@ impl WgoApp {
         }
 
         ui.add_space(8.0);
+        ui.label("Audio source");
+        egui::ComboBox::from_id_salt("audio_source_combo")
+            .selected_text(match self.selected_audio_source {
+                AudioSource::MicOnly => "Microphone only",
+                AudioSource::DesktopOnly => "Desktop audio only",
+                AudioSource::MicAndDesktop => "Microphone + desktop",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.selected_audio_source,
+                    AudioSource::MicOnly,
+                    "Microphone only",
+                );
+                ui.selectable_value(
+                    &mut self.selected_audio_source,
+                    AudioSource::DesktopOnly,
+                    "Desktop audio only",
+                );
+                ui.selectable_value(
+                    &mut self.selected_audio_source,
+                    AudioSource::MicAndDesktop,
+                    "Microphone + desktop",
+                );
+            });
+
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.label("Microphone");
             if ui.button("Refresh").clicked() {
@@ -702,6 +768,38 @@ impl WgoApp {
                     ui.selectable_value(&mut self.selected_microphone, Some(mic.clone()), mic);
                 }
             });
+
+        if matches!(
+            self.selected_audio_source,
+            AudioSource::DesktopOnly | AudioSource::MicAndDesktop
+        ) {
+            ui.add_space(8.0);
+            ui.label("Desktop audio device");
+            egui::ComboBox::from_id_salt("desktop_audio_combo")
+                .selected_text(
+                    self.selected_desktop_device
+                        .clone()
+                        .unwrap_or_else(|| "Default device".to_string()),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.selected_desktop_device,
+                        None,
+                        "Default device",
+                    );
+                    for device in &self.desktop_devices {
+                        ui.selectable_value(
+                            &mut self.selected_desktop_device,
+                            Some(device.clone()),
+                            device,
+                        );
+                    }
+                });
+
+            ui.small(
+                "Tip: system audio usually requires a loopback/virtual device (for example BlackHole).",
+            );
+        }
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
