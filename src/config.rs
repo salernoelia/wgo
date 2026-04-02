@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -40,6 +40,52 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    fn merged_from(cfg: Self) -> Self {
+        let mut merged = Self::default();
+        merged.groq_api_key = cfg.groq_api_key;
+        merged.microphone_name = cfg.microphone_name;
+        merged.markdown_dir = cfg.markdown_dir;
+        merged.recordings_dir = cfg.recordings_dir;
+        merged.markdown_pattern = cfg.markdown_pattern;
+        if !cfg.toggle_shortcut.trim().is_empty() {
+            merged.toggle_shortcut = cfg.toggle_shortcut;
+        }
+        if !cfg.show_window_shortcut.trim().is_empty() {
+            merged.show_window_shortcut = cfg.show_window_shortcut;
+        }
+        merged.minimize_on_stop = cfg.minimize_on_stop;
+        merged.hold_to_record_key = cfg.hold_to_record_key;
+        merged
+    }
+
+    fn read_config(path: &Path) -> Option<Self> {
+        let content = fs::read_to_string(path).ok()?;
+        let cfg = serde_json::from_str::<Self>(&content).ok()?;
+        Some(Self::merged_from(cfg))
+    }
+
+    fn legacy_config_paths(primary: &Path) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let candidate = exe_dir.join("config.json");
+                if candidate != primary {
+                    paths.push(candidate);
+                }
+            }
+        }
+
+        if let Ok(cwd) = std::env::current_dir() {
+            let candidate = cwd.join("config.json");
+            if candidate != primary && !paths.contains(&candidate) {
+                paths.push(candidate);
+            }
+        }
+
+        paths
+    }
+
     pub fn default_recordings_dir() -> PathBuf {
         dirs::document_dir()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
@@ -83,23 +129,14 @@ impl AppConfig {
 
     pub fn load() -> Self {
         let path = Self::config_path();
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str::<Self>(&content) {
-                let mut merged = Self::default();
-                merged.groq_api_key = cfg.groq_api_key;
-                merged.microphone_name = cfg.microphone_name;
-                merged.markdown_dir = cfg.markdown_dir;
-                merged.recordings_dir = cfg.recordings_dir;
-                merged.markdown_pattern = cfg.markdown_pattern;
-                if !cfg.toggle_shortcut.trim().is_empty() {
-                    merged.toggle_shortcut = cfg.toggle_shortcut;
-                }
-                if !cfg.show_window_shortcut.trim().is_empty() {
-                    merged.show_window_shortcut = cfg.show_window_shortcut;
-                }
-                merged.minimize_on_stop = cfg.minimize_on_stop;
-                merged.hold_to_record_key = cfg.hold_to_record_key;
-                return merged;
+        if let Some(cfg) = Self::read_config(&path) {
+            return cfg;
+        }
+
+        for legacy_path in Self::legacy_config_paths(&path) {
+            if let Some(cfg) = Self::read_config(&legacy_path) {
+                let _ = cfg.save();
+                return cfg;
             }
         }
 
