@@ -1,8 +1,10 @@
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+const MAX_RECORDING_BYTES: u64 = 20 * 1024 * 1024; // 20 MB — safely under Groq's 25 MB limit
 use std::time::SystemTime;
 
 fn normalize_input_error(context: &str, err: impl std::fmt::Display) -> String {
@@ -36,6 +38,7 @@ pub struct AudioRecorder {
     is_monitoring: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     level_milli: Arc<AtomicU32>,
+    bytes_written: Arc<AtomicU64>,
     writer: Option<Arc<Mutex<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
     pub current_filename: Option<String>,
     device_name: Option<String>,
@@ -49,6 +52,7 @@ impl AudioRecorder {
             is_monitoring: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
             level_milli: Arc::new(AtomicU32::new(0)),
+            bytes_written: Arc::new(AtomicU64::new(0)),
             writer: None,
             current_filename: None,
             device_name: None,
@@ -227,10 +231,12 @@ impl AudioRecorder {
         };
 
         self.writer = Some(writer.clone());
+        self.bytes_written.store(0, Ordering::SeqCst);
         let is_recording = self.is_recording.clone();
         let is_monitoring = self.is_monitoring.clone();
         let is_paused = self.is_paused.clone();
         let level_milli = self.level_milli.clone();
+        let bytes_written = self.bytes_written.clone();
 
         let stream = match sample_format {
             cpal::SampleFormat::F32 => {
@@ -238,6 +244,7 @@ impl AudioRecorder {
                 let is_recording_clone = is_recording.clone();
                 let is_paused_clone = is_paused.clone();
                 let level_milli_clone = level_milli.clone();
+                let bytes_written_clone = bytes_written.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -249,6 +256,11 @@ impl AudioRecorder {
                             {
                                 return;
                             }
+                            if bytes_written_clone.load(Ordering::Relaxed) >= MAX_RECORDING_BYTES {
+                                is_recording_clone.store(false, Ordering::SeqCst);
+                                eprintln!("Recording stopped: reached {MAX_RECORDING_BYTES} byte limit");
+                                return;
+                            }
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
                                 for frame in data.chunks(num_input_channels) {
@@ -256,6 +268,10 @@ impl AudioRecorder {
                                     peak = peak.max(mono.abs());
                                     let _ = writer.write_sample(Self::i16_from_f32(mono));
                                 }
+                                bytes_written_clone.fetch_add(
+                                    (data.len() / num_input_channels * 2) as u64,
+                                    Ordering::Relaxed,
+                                );
                                 let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
                                 level_milli_clone.store(scaled, Ordering::SeqCst);
                             }
@@ -272,6 +288,7 @@ impl AudioRecorder {
                 let is_recording_clone = is_recording.clone();
                 let is_paused_clone = is_paused.clone();
                 let level_milli_clone = level_milli.clone();
+                let bytes_written_clone = bytes_written.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -283,6 +300,11 @@ impl AudioRecorder {
                             {
                                 return;
                             }
+                            if bytes_written_clone.load(Ordering::Relaxed) >= MAX_RECORDING_BYTES {
+                                is_recording_clone.store(false, Ordering::SeqCst);
+                                eprintln!("Recording stopped: reached {MAX_RECORDING_BYTES} byte limit");
+                                return;
+                            }
                             if let Ok(mut writer) = writer_clone.lock() {
                                 let mut peak = 0.0f32;
                                 for frame in data.chunks(num_input_channels) {
@@ -291,6 +313,10 @@ impl AudioRecorder {
                                     peak = peak.max((mono / i16::MAX as f32).abs());
                                     let _ = writer.write_sample(mono as i16);
                                 }
+                                bytes_written_clone.fetch_add(
+                                    (data.len() / num_input_channels * 2) as u64,
+                                    Ordering::Relaxed,
+                                );
                                 let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
                                 level_milli_clone.store(scaled, Ordering::SeqCst);
                             }
@@ -307,6 +333,7 @@ impl AudioRecorder {
                 let is_recording_clone = is_recording.clone();
                 let is_paused_clone = is_paused.clone();
                 let level_milli_clone = level_milli.clone();
+                let bytes_written_clone = bytes_written.clone();
                 device
                     .build_input_stream(
                         &stream_config,
@@ -316,6 +343,11 @@ impl AudioRecorder {
                             if (!recording && !monitoring)
                                 || (recording && is_paused_clone.load(Ordering::SeqCst))
                             {
+                                return;
+                            }
+                            if bytes_written_clone.load(Ordering::Relaxed) >= MAX_RECORDING_BYTES {
+                                is_recording_clone.store(false, Ordering::SeqCst);
+                                eprintln!("Recording stopped: reached {MAX_RECORDING_BYTES} byte limit");
                                 return;
                             }
                             if let Ok(mut writer) = writer_clone.lock() {
@@ -329,6 +361,10 @@ impl AudioRecorder {
                                     peak = peak.max((mono / i16::MAX as f32).abs());
                                     let _ = writer.write_sample(mono as i16);
                                 }
+                                bytes_written_clone.fetch_add(
+                                    (data.len() / num_input_channels * 2) as u64,
+                                    Ordering::Relaxed,
+                                );
                                 let scaled = (peak.clamp(0.0, 1.0) * 1000.0).round() as u32;
                                 level_milli_clone.store(scaled, Ordering::SeqCst);
                             }
@@ -535,6 +571,7 @@ impl AudioRecorder {
         self.is_monitoring.store(false, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
         self.level_milli.store(0, Ordering::SeqCst);
+        self.bytes_written.store(0, Ordering::SeqCst);
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
