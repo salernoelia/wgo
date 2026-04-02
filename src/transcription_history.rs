@@ -46,6 +46,10 @@ impl TranscriptionHistory {
         data_dir.join(Self::HISTORY_FILE)
     }
 
+    pub fn has_history(&self) -> bool {
+        !self.records.is_empty()
+    }
+
     pub fn new() -> Self {
         Self {
             records: Vec::new(),
@@ -65,6 +69,10 @@ impl TranscriptionHistory {
         } else {
             Self::new()
         }
+    }
+
+    pub fn latest(&self) -> Option<&TranscriptionRecord> {
+        self.records.last()
     }
 
     pub fn save(&self) {

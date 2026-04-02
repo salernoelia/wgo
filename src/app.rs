@@ -1,6 +1,7 @@
 use crate::audio_recorder::AudioRecorder;
 use crate::config::AppConfig;
 use crate::shortcut_detector::{HotkeyBindings, HotkeyCommand, HotkeyRuntime};
+use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use chrono::Local;
 use eframe::egui;
 use std::fs;
@@ -8,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MIC_GRAPH_HISTORY_LEN: usize = 120;
 const MIC_GRAPH_SAMPLE_INTERVAL: Duration = Duration::from_millis(16);
@@ -36,6 +38,7 @@ pub struct WgoApp {
     last_transcription: String,
     last_failed_audio_path: Option<String>,
     update_state: UpdateState,
+    history: TranscriptionHistory,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -94,6 +97,8 @@ impl WgoApp {
 
         let (ui_event_tx, ui_event_rx) = mpsc::channel();
 
+        let history = TranscriptionHistory::load();
+
         Self {
             recorder,
             hotkey_runtime,
@@ -115,6 +120,7 @@ impl WgoApp {
             last_transcription: String::new(),
             last_failed_audio_path: None,
             update_state: UpdateState::Idle,
+            history,
         }
     }
 
@@ -249,6 +255,19 @@ impl WgoApp {
                 } => {
                     self.last_transcription = text.clone();
                     self.last_failed_audio_path = None;
+
+                    if let Some(path) = &markdown_path {
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        self.history.add_record(TranscriptionRecord {
+                            filename: path.to_string_lossy().to_string(),
+                            transcription: text,
+                            timestamp,
+                        });
+                    }
+
                     self.status_line = match markdown_path {
                         Some(path) => format!(
                             "Audio: {} \nMarkdown:{}",
@@ -307,7 +326,10 @@ impl WgoApp {
                 Ok((latest, url)) => {
                     let current = env!("CARGO_PKG_VERSION");
                     if latest != current {
-                        let _ = ui_tx.send(UiEvent::UpdateAvailable { version: latest, url });
+                        let _ = ui_tx.send(UiEvent::UpdateAvailable {
+                            version: latest,
+                            url,
+                        });
                     } else {
                         let _ = ui_tx.send(UiEvent::UpToDate);
                     }
@@ -600,6 +622,15 @@ impl WgoApp {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        egui::Area::new(egui::Id::new("save_btn"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 84.0))
+            .show(ui.ctx(), |ui| {
+                let btn =
+                    egui::Button::new("Save settings").fill(egui::Color32::from_rgb(120, 217, 120));
+                if ui.add(btn).clicked() {
+                    self.save_settings();
+                }
+            });
         ui.label("Groq API key");
         ui.add(
             egui::TextEdit::singleline(&mut self.config.groq_api_key)
@@ -645,18 +676,64 @@ impl WgoApp {
         });
 
         ui.add_space(8.0);
+
         ui.label("Markdown output folder");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.config.markdown_dir)
-                .hint_text("/path/to/transcriptions"),
-        );
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.config.markdown_dir)
+                    .hint_text("/path/to/transcriptions"),
+            );
+            if ui.button("Open Directory").clicked() {
+                match &self.config.markdown_dir {
+                    path if path.trim().is_empty() => {
+                        self.status_line = "Markdown directory is not set.".to_string();
+                    }
+                    path => {
+                        let result = crate::utils::open_folder_in_file_explorer(path);
+                        if let Err(err) = result {
+                            self.status_line = format!("Failed to open directory: {err}");
+                        }
+                    }
+                }
+            }
+        });
+
+        ui.label("Audio Recordings output folder");
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.config.recordings_dir)
+                    .hint_text("/path/to/recordings"),
+            );
+            if ui.button("Open Directory").clicked() {
+                match &self.config.recordings_dir {
+                    path if path.trim().is_empty() => {
+                        self.status_line = "Recordings directory is not set.".to_string();
+                    }
+                    path => {
+                        if let Err(err) = fs::create_dir_all(path) {
+                            self.status_line =
+                                format!("Failed to create recordings directory: {err}");
+                        } else {
+                            let result = crate::utils::open_folder_in_file_explorer(path);
+                            if let Err(err) = result {
+                                self.status_line = format!("Failed to open directory: {err}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
 
         ui.add_space(8.0);
         ui.label("Markdown file name pattern");
+
         ui.add(
             egui::TextEdit::singleline(&mut self.config.markdown_pattern)
                 .hint_text("transcription_{date}_{time}.md"),
         );
+
         ui.small("Tokens: {date}, {time}, {timestamp}");
 
         ui.add_space(8.0);
@@ -698,12 +775,6 @@ impl WgoApp {
             ui.small(label);
         }
 
-        ui.add_space(12.0);
-        if ui.button("Save settings").clicked() {
-            self.save_settings();
-        }
-
-        ui.add_space(16.0);
         ui.separator();
         ui.add_space(8.0);
 
@@ -722,8 +793,11 @@ impl WgoApp {
                 }
                 UpdateState::UpToDate => {
                     ui.label(
-                        egui::RichText::new(format!("v{} is up to date", env!("CARGO_PKG_VERSION")))
-                            .color(ui.visuals().weak_text_color()),
+                        egui::RichText::new(format!(
+                            "v{} is up to date",
+                            env!("CARGO_PKG_VERSION")
+                        ))
+                        .color(ui.visuals().weak_text_color()),
                     );
                 }
                 UpdateState::UpdateAvailable { version, url } => {
@@ -847,6 +921,18 @@ impl WgoApp {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.active_tab, AppTab::Recorder, "Recorder");
             ui.selectable_value(&mut self.active_tab, AppTab::Settings, "Settings");
+
+            let open_last = ui.add_enabled(
+                self.history.has_history(),
+                egui::Button::new("Open last transcription"),
+            );
+            if open_last.clicked() {
+                if let Some(record) = self.history.latest() {
+                    if let Err(err) = crate::utils::open_markdown_in_editor(&record.filename) {
+                        self.status_line = format!("Failed to open transcription: {err}");
+                    }
+                }
+            }
         });
         ui.separator();
     }

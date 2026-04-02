@@ -1,7 +1,6 @@
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -38,7 +37,7 @@ pub struct AudioRecorder {
     is_paused: Arc<AtomicBool>,
     level_milli: Arc<AtomicU32>,
     writer: Option<Arc<Mutex<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
-    current_filename: Option<String>,
+    pub current_filename: Option<String>,
     device_name: Option<String>,
 }
 
@@ -73,17 +72,6 @@ impl AudioRecorder {
 
     pub fn set_device_name(&mut self, device_name: Option<String>) {
         self.device_name = device_name;
-    }
-
-    fn get_recordings_dir() -> PathBuf {
-        let recordings_dir = crate::config::AppConfig::app_data_dir().join("recordings");
-
-        if let Err(e) = std::fs::create_dir_all(&recordings_dir) {
-            eprintln!("Warning: Failed to create recordings directory: {}", e);
-            return std::env::current_dir().unwrap_or_default();
-        }
-
-        recordings_dir
     }
 
     pub fn is_recording(&self) -> bool {
@@ -225,7 +213,10 @@ impl AudioRecorder {
             .as_secs();
 
         let filename = format!("recording_{}.wav", timestamp);
-        let file_path = Self::get_recordings_dir().join(&filename);
+        let recordings_dir = crate::config::AppConfig::load()
+            .ensure_recordings_dir()
+            .map_err(|e| format!("Failed to prepare recordings directory: {e}"))?;
+        let file_path = recordings_dir.join(&filename);
         self.current_filename = Some(file_path.to_string_lossy().to_string());
 
         let writer = match WavWriter::create(&file_path, spec) {
@@ -580,12 +571,7 @@ impl AudioRecorder {
             let m4a_path = wav_path.replace(".wav", ".m4a");
             let status = std::process::Command::new("afconvert")
                 .args([
-                    "-f", "m4af",
-                    "-d", "aac",
-                    "-b", "32000",
-                    "-c", "1",
-                    wav_path,
-                    &m4a_path,
+                    "-f", "m4af", "-d", "aac", "-b", "32000", "-c", "1", wav_path, &m4a_path,
                 ])
                 .status();
             match status {
