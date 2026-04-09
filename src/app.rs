@@ -47,11 +47,14 @@ pub struct WgoApp {
     update_state: UpdateState,
     history: TranscriptionHistory,
     was_recording: bool,
+    history_search: String,
+    last_audio_path: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AppTab {
     Recorder,
+    History,
     Settings,
 }
 
@@ -147,6 +150,8 @@ impl WgoApp {
             update_state: UpdateState::Checking,
             history,
             was_recording: false,
+            history_search: String::new(),
+            last_audio_path: None,
         }
     }
 
@@ -158,17 +163,11 @@ impl WgoApp {
             move || match crate::groq_request::transcribe_audio(&audio_path) {
                 Ok(text) => {
                     crate::utils::copy_to_clipboard(&text);
-                    AudioRecorder::save_transcription(&audio_path, &text);
 
                     let md_path = match save_transcription_markdown(&cfg, &audio_path, &text) {
                         Ok(path) => Some(path),
                         Err(err) => {
-                            let _ = ui_tx.send(UiEvent::TranscriptionFailed {
-                                audio_path: audio_path.clone(),
-                                error: format!(
-                                    "Transcription succeeded but markdown save failed: {err}"
-                                ),
-                            });
+                            eprintln!("Markdown save failed: {err}");
                             None
                         }
                     };
@@ -308,19 +307,21 @@ impl WgoApp {
                 } => {
                     self.last_transcription = text.clone();
                     self.last_failed_audio_path = None;
+                    self.last_audio_path = Some(audio_path.clone());
 
-                    if let Some(path) = &markdown_path {
-                        let timestamp = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
-                        self.history.add_record(TranscriptionRecord {
-                            filename: path.to_string_lossy().to_string(),
-                            transcription: text,
-                            timestamp,
-                            audio_path: Some(audio_path.clone()),
-                        });
-                    }
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    self.history.add_record(TranscriptionRecord {
+                        filename: markdown_path
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                        transcription: text,
+                        timestamp,
+                        audio_path: Some(audio_path.clone()),
+                    });
 
                     self.status_line = match markdown_path {
                         Some(path) => format!(
@@ -703,32 +704,60 @@ impl WgoApp {
     }
 
     fn recordings_history_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label("Recordings & Transcriptions");
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.history_search)
+                    .hint_text("Filter recordings…")
+                    .desired_width(f32::INFINITY),
+            );
+            if !self.history_search.is_empty() && ui.small_button("✕").clicked() {
+                self.history_search.clear();
+            }
+        });
+        ui.add_space(4.0);
 
         if self.history.records.is_empty() {
-            ui.small("No recordings yet.");
+            ui.label(
+                egui::RichText::new("No recordings yet.").color(ui.visuals().weak_text_color()),
+            );
             return;
         }
 
-        // Collect data to avoid borrow issues while rendering
+        let query = self.history_search.to_lowercase();
         let records: Vec<_> = self
             .history
             .records
             .iter()
             .rev()
+            .filter(|r| {
+                query.is_empty()
+                    || r.transcription.to_lowercase().contains(&query)
+                    || r.filename.to_lowercase().contains(&query)
+            })
             .cloned()
             .collect();
 
+        if records.is_empty() {
+            ui.label(
+                egui::RichText::new("No results match your search.")
+                    .color(ui.visuals().weak_text_color()),
+            );
+            return;
+        }
+
         let mut open_audio: Option<String> = None;
+        let mut reveal_audio: Option<String> = None;
         let mut open_markdown: Option<String> = None;
+        let mut reveal_markdown: Option<String> = None;
 
         egui::ScrollArea::vertical()
             .id_salt("history_scroll")
-            .max_height(240.0)
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for record in &records {
                     ui.group(|ui| {
-                        // Format timestamp
+                        ui.set_width(ui.available_width());
                         let dt = chrono::DateTime::from_timestamp(record.timestamp as i64, 0)
                             .map(|dt: chrono::DateTime<chrono::Utc>| {
                                 dt.with_timezone(&chrono::Local)
@@ -737,63 +766,88 @@ impl WgoApp {
                             })
                             .unwrap_or_else(|| record.timestamp.to_string());
 
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(&dt).strong());
+                        ui.label(egui::RichText::new(&dt).strong().small());
 
-                            if let Some(ref audio) = record.audio_path {
-                                if std::path::Path::new(audio).exists() {
-                                    if ui.small_button("Open audio in Finder").clicked() {
-                                        open_audio = Some(audio.clone());
-                                    }
-                                }
-                            }
-
-                            let md_exists = std::path::Path::new(&record.filename).exists();
-                            if md_exists {
-                                if ui.small_button("Open markdown").clicked() {
-                                    open_markdown = Some(record.filename.clone());
-                                }
-                            }
-                        });
-
-                        let preview = record.transcription.chars().take(120).collect::<String>();
-                        let preview = if record.transcription.len() > 120 {
+                        let preview = record.transcription.chars().take(160).collect::<String>();
+                        let preview = if record.transcription.len() > 160 {
                             format!("{preview}…")
                         } else {
                             preview
                         };
-                        ui.small(&preview);
+                        ui.label(egui::RichText::new(&preview).small());
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if let Some(ref audio) = record.audio_path {
+                                let audio_exists = std::path::Path::new(audio).exists();
+                                if ui
+                                    .add_enabled(
+                                        audio_exists,
+                                        egui::Button::new("▶ Open audio").small(),
+                                    )
+                                    .on_disabled_hover_text("Audio file not found")
+                                    .clicked()
+                                {
+                                    open_audio = Some(audio.clone());
+                                }
+                                if ui
+                                    .add_enabled(
+                                        audio_exists,
+                                        egui::Button::new("📁 Audio in Finder").small(),
+                                    )
+                                    .on_disabled_hover_text("Audio file not found")
+                                    .clicked()
+                                {
+                                    reveal_audio = Some(audio.clone());
+                                }
+                            }
+
+                            let md_exists = std::path::Path::new(&record.filename).exists();
+                            if ui
+                                .add_enabled(
+                                    md_exists,
+                                    egui::Button::new("📄 Open markdown").small(),
+                                )
+                                .on_disabled_hover_text("Markdown file not found")
+                                .clicked()
+                            {
+                                open_markdown = Some(record.filename.clone());
+                            }
+                            if ui
+                                .add_enabled(
+                                    md_exists,
+                                    egui::Button::new("📁 Markdown in Finder").small(),
+                                )
+                                .on_disabled_hover_text("Markdown file not found")
+                                .clicked()
+                            {
+                                reveal_markdown = Some(record.filename.clone());
+                            }
+                        });
                     });
                     ui.add_space(2.0);
                 }
             });
 
         if let Some(audio) = open_audio {
-            // Reveal the file in Finder/Explorer by opening its parent directory
-            if let Some(parent) = std::path::Path::new(&audio).parent() {
-                let _ = crate::utils::open_folder_in_file_explorer(
-                    &parent.to_string_lossy(),
-                );
+            if let Err(e) = crate::utils::open_markdown_in_editor(&audio) {
+                self.status_line = format!("Failed to open audio: {e}");
             }
         }
-
+        if let Some(audio) = reveal_audio {
+            let _ = crate::utils::reveal_file_in_finder(&audio);
+        }
         if let Some(md) = open_markdown {
             if let Err(e) = crate::utils::open_markdown_in_editor(&md) {
                 self.status_line = format!("Failed to open markdown: {e}");
             }
         }
+        if let Some(md) = reveal_markdown {
+            let _ = crate::utils::reveal_file_in_finder(&md);
+        }
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        egui::Area::new(egui::Id::new("save_btn"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 84.0))
-            .show(ui.ctx(), |ui| {
-                let btn =
-                    egui::Button::new("Save settings").fill(egui::Color32::from_rgb(120, 217, 120));
-                if ui.add(btn).clicked() {
-                    self.save_settings();
-                }
-            });
         ui.label("Groq API key");
         ui.add(
             egui::TextEdit::singleline(&mut self.config.groq_api_key)
@@ -1044,11 +1098,6 @@ impl WgoApp {
         ui.separator();
         ui.add_space(8.0);
 
-        self.recordings_history_ui(ui);
-
-        ui.separator();
-        ui.add_space(8.0);
-
         // Collect update state data before drawing to avoid borrow conflicts.
         enum UpdateAction {
             None,
@@ -1163,6 +1212,18 @@ impl WgoApp {
             UpdateAction::PerformUpdate(url) => self.perform_self_update(url),
             UpdateAction::None => {}
         }
+
+        egui::Area::new(egui::Id::new("save_btn"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.0, -36.0))
+            .show(ui.ctx(), |ui| {
+                let btn = egui::Button::new(
+                    egui::RichText::new("Save settings").color(egui::Color32::WHITE),
+                )
+                .fill(egui::Color32::from_rgb(80, 160, 80));
+                if ui.add(btn).clicked() {
+                    self.save_settings();
+                }
+            });
     }
 
     fn controls_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
@@ -1201,6 +1262,19 @@ impl WgoApp {
                 .clicked()
             {
                 self.cancel_recording(ui.ctx());
+            }
+
+            let mic_test_active = self.is_monitoring();
+            let mic_test_label = if mic_test_active {
+                "Stop microphone test"
+            } else {
+                "Start microphone test"
+            };
+            if ui
+                .add_enabled(!is_recording, egui::Button::new(mic_test_label))
+                .clicked()
+            {
+                self.toggle_microphone_test();
             }
         });
 
@@ -1254,18 +1328,62 @@ impl WgoApp {
                 });
             }
 
-            let mic_test_active = self.is_monitoring();
-            let mic_test_label = if mic_test_active {
-                "Stop microphone test"
-            } else {
-                "Start microphone test"
-            };
-            if ui
-                .add_enabled(!is_recording, egui::Button::new(mic_test_label))
-                .clicked()
-            {
-                self.toggle_microphone_test();
-            }
+            let has_history = self.history.has_history();
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let mut open_md: Option<String> = None;
+                let mut reveal_md: Option<String> = None;
+                let mut reveal_audio: Option<String> = None;
+
+                if let Some(record) = self.history.latest() {
+                    let md_exists = std::path::Path::new(&record.filename).exists();
+                    if ui
+                        .add_enabled(
+                            has_history && md_exists,
+                            egui::Button::new("Open last transcription"),
+                        )
+                        .on_disabled_hover_text("No transcription available")
+                        .clicked()
+                    {
+                        open_md = Some(record.filename.clone());
+                    }
+                    if ui
+                        .add_enabled(
+                            has_history && md_exists,
+                            egui::Button::new("Transcriptions in Finder"),
+                        )
+                        .on_disabled_hover_text("No transcription available")
+                        .clicked()
+                    {
+                        reveal_md = Some(record.filename.clone());
+                    }
+                    if let Some(ref audio) = record.audio_path {
+                        let audio_exists = std::path::Path::new(audio).exists();
+                        if ui
+                            .add_enabled(
+                                has_history && audio_exists,
+                                egui::Button::new("Recordings in Finder"),
+                            )
+                            .on_disabled_hover_text("No recording available")
+                            .clicked()
+                        {
+                            reveal_audio = Some(audio.clone());
+                        }
+                    }
+                }
+
+                if let Some(md) = open_md {
+                    if let Err(e) = crate::utils::open_markdown_in_editor(&md) {
+                        self.status_line = format!("Failed to open transcription: {e}");
+                    }
+                }
+                if let Some(md) = reveal_md {
+                    let _ = crate::utils::reveal_file_in_finder(&md);
+                }
+                if let Some(audio) = reveal_audio {
+                    let _ = crate::utils::reveal_file_in_finder(&audio);
+                }
+            });
         }
     }
 
@@ -1301,19 +1419,8 @@ impl WgoApp {
     fn tabs_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.active_tab, AppTab::Recorder, "Recorder");
+            ui.selectable_value(&mut self.active_tab, AppTab::History, "History");
             ui.selectable_value(&mut self.active_tab, AppTab::Settings, "Settings");
-
-            let open_last = ui.add_enabled(
-                self.history.has_history(),
-                egui::Button::new("Open last transcription"),
-            );
-            if open_last.clicked() {
-                if let Some(record) = self.history.latest() {
-                    if let Err(err) = crate::utils::open_markdown_in_editor(&record.filename) {
-                        self.status_line = format!("Failed to open transcription: {err}");
-                    }
-                }
-            }
         });
         ui.separator();
     }
@@ -1502,13 +1609,18 @@ impl eframe::App for WgoApp {
                                 self.latest_transcription_ui(ui);
                             });
                     }
+                    AppTab::History => {
+                        egui::ScrollArea::vertical()
+                            .id_salt("history_tab_scroll")
+                            .show(ui, |ui| {
+                                self.recordings_history_ui(ui);
+                            });
+                    }
                     AppTab::Settings => {
                         egui::ScrollArea::vertical()
                             .id_salt("settings_tab_scroll")
                             .show(ui, |ui| {
                                 self.settings_ui(ui);
-                                ui.separator();
-                                self.latest_transcription_ui(ui);
                             });
                     }
                 }
@@ -1807,7 +1919,6 @@ fn save_transcription_markdown(
 fn has_non_empty_api_key(config: &AppConfig) -> bool {
     config.has_api_key()
 }
-
 
 #[cfg(test)]
 mod tests {

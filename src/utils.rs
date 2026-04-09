@@ -45,6 +45,29 @@ pub fn open_markdown_in_editor(path: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Reveal a specific file in the system file manager (selects it).
+pub fn reveal_file_in_finder(path: &str) -> Result<(), std::io::Error> {
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open").args(["-R", path]).spawn()?;
+
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("explorer")
+        .args(["/select,", path])
+        .spawn()?;
+
+    #[cfg(target_os = "linux")]
+    {
+        // Best-effort: open the parent folder
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            std::process::Command::new("xdg-open")
+                .arg(parent)
+                .spawn()?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn open_microphone_permissions_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
