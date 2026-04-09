@@ -46,6 +46,7 @@ pub struct WgoApp {
     last_failed_audio_path: Option<String>,
     update_state: UpdateState,
     history: TranscriptionHistory,
+    was_recording: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -145,6 +146,7 @@ impl WgoApp {
             last_failed_audio_path: None,
             update_state: UpdateState::Checking,
             history,
+            was_recording: false,
         }
     }
 
@@ -316,6 +318,7 @@ impl WgoApp {
                             filename: path.to_string_lossy().to_string(),
                             transcription: text,
                             timestamp,
+                            audio_path: Some(audio_path.clone()),
                         });
                     }
 
@@ -699,6 +702,88 @@ impl WgoApp {
         self.start_transcription_job(audio_path);
     }
 
+    fn recordings_history_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("Recordings & Transcriptions");
+
+        if self.history.records.is_empty() {
+            ui.small("No recordings yet.");
+            return;
+        }
+
+        // Collect data to avoid borrow issues while rendering
+        let records: Vec<_> = self
+            .history
+            .records
+            .iter()
+            .rev()
+            .cloned()
+            .collect();
+
+        let mut open_audio: Option<String> = None;
+        let mut open_markdown: Option<String> = None;
+
+        egui::ScrollArea::vertical()
+            .id_salt("history_scroll")
+            .max_height(240.0)
+            .show(ui, |ui| {
+                for record in &records {
+                    ui.group(|ui| {
+                        // Format timestamp
+                        let dt = chrono::DateTime::from_timestamp(record.timestamp as i64, 0)
+                            .map(|dt: chrono::DateTime<chrono::Utc>| {
+                                dt.with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M")
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|| record.timestamp.to_string());
+
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&dt).strong());
+
+                            if let Some(ref audio) = record.audio_path {
+                                if std::path::Path::new(audio).exists() {
+                                    if ui.small_button("Open audio in Finder").clicked() {
+                                        open_audio = Some(audio.clone());
+                                    }
+                                }
+                            }
+
+                            let md_exists = std::path::Path::new(&record.filename).exists();
+                            if md_exists {
+                                if ui.small_button("Open markdown").clicked() {
+                                    open_markdown = Some(record.filename.clone());
+                                }
+                            }
+                        });
+
+                        let preview = record.transcription.chars().take(120).collect::<String>();
+                        let preview = if record.transcription.len() > 120 {
+                            format!("{preview}…")
+                        } else {
+                            preview
+                        };
+                        ui.small(&preview);
+                    });
+                    ui.add_space(2.0);
+                }
+            });
+
+        if let Some(audio) = open_audio {
+            // Reveal the file in Finder/Explorer by opening its parent directory
+            if let Some(parent) = std::path::Path::new(&audio).parent() {
+                let _ = crate::utils::open_folder_in_file_explorer(
+                    &parent.to_string_lossy(),
+                );
+            }
+        }
+
+        if let Some(md) = open_markdown {
+            if let Err(e) = crate::utils::open_markdown_in_editor(&md) {
+                self.status_line = format!("Failed to open markdown: {e}");
+            }
+        }
+    }
+
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         egui::Area::new(egui::Id::new("save_btn"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 84.0))
@@ -955,6 +1040,11 @@ impl WgoApp {
         if matches!(self.recording_target, Some(ShortcutTarget::HoldKey)) {
             ui.small("Listening for hold key...");
         }
+
+        ui.separator();
+        ui.add_space(8.0);
+
+        self.recordings_history_ui(ui);
 
         ui.separator();
         ui.add_space(8.0);
@@ -1369,7 +1459,20 @@ impl eframe::App for WgoApp {
         self.sample_mic_graph_if_due();
         self.handle_dropped_files(ctx);
         self.drop_overlay_ui(ctx);
+
+        // Detect when the recorder stopped itself externally (e.g. byte limit hit)
+        // and finalize + transcribe, just as if the user pressed Stop.
+        let stopped_externally = self
+            .recorder
+            .lock()
+            .map(|r| r.was_stopped_externally())
+            .unwrap_or(false);
+        if stopped_externally {
+            self.stop_recording(ctx);
+        }
+
         let is_recording = self.is_recording();
+        self.was_recording = is_recording;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             self.mic_graph_ui(ui);
@@ -1704,6 +1807,7 @@ fn save_transcription_markdown(
 fn has_non_empty_api_key(config: &AppConfig) -> bool {
     config.has_api_key()
 }
+
 
 #[cfg(test)]
 mod tests {

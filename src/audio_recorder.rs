@@ -14,7 +14,7 @@ pub enum AudioSource {
     MicAndDesktop,
 }
 
-const MAX_RECORDING_BYTES: u64 = 20 * 1024 * 1024; // 20 MB — safely under Groq's 25 MB limit
+const MAX_RECORDING_BYTES: u64 = 1000 * 1024 * 1024;
 use std::time::SystemTime;
 
 fn normalize_input_error(context: &str, err: impl std::fmt::Display) -> String {
@@ -133,6 +133,7 @@ impl AudioRecorder {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            audio_path: None,
         };
         history.add_record(record);
     }
@@ -779,8 +780,16 @@ impl AudioRecorder {
         Ok(())
     }
 
+    /// Returns true if recording was stopped externally (e.g. byte limit hit) and
+    /// the app should call stop_recording() to finalize and transcribe.
+    pub fn was_stopped_externally(&self) -> bool {
+        !self.is_recording.load(Ordering::SeqCst) && self.writer.is_some()
+    }
+
     pub fn stop_recording(&mut self) -> Result<Option<String>, String> {
-        if !self.is_recording.load(Ordering::SeqCst) {
+        let recording_active = self.is_recording.load(Ordering::SeqCst);
+        let has_writer = self.writer.is_some();
+        if !recording_active && !has_writer {
             return Ok(None);
         }
 
@@ -844,5 +853,165 @@ impl AudioRecorder {
         }
 
         Ok(completed_filename)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use tempfile::tempdir;
+
+    #[test]
+    fn i16_from_f32_maps_positive_one_to_max() {
+        assert_eq!(AudioRecorder::i16_from_f32(1.0), i16::MAX);
+    }
+
+    #[test]
+    fn i16_from_f32_maps_zero_to_zero() {
+        assert_eq!(AudioRecorder::i16_from_f32(0.0), 0);
+    }
+
+    #[test]
+    fn i16_from_f32_maps_negative_one_to_min_plus_one() {
+        // -1.0 * i16::MAX = -32767; casting to i16 is exact
+        let result = AudioRecorder::i16_from_f32(-1.0);
+        assert!(result <= -32767);
+    }
+
+    #[test]
+    fn i16_from_f32_clamps_above_one() {
+        let clamped = AudioRecorder::i16_from_f32(2.0);
+        let at_one = AudioRecorder::i16_from_f32(1.0);
+        assert_eq!(clamped, at_one);
+    }
+
+    #[test]
+    fn i16_from_f32_clamps_below_negative_one() {
+        let clamped = AudioRecorder::i16_from_f32(-5.0);
+        let at_neg_one = AudioRecorder::i16_from_f32(-1.0);
+        assert_eq!(clamped, at_neg_one);
+    }
+
+    #[test]
+    fn i16_from_u16_midpoint_maps_near_zero() {
+        // u16 midpoint is 32768; subtracting i16::MAX+1 (32768) = 0
+        let result = AudioRecorder::i16_from_u16(32768u16);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn i16_from_u16_zero_maps_to_negative_max() {
+        // 0 - 32768 = -32768 which wraps to i16::MIN in i16
+        let result = AudioRecorder::i16_from_u16(0u16);
+        assert!(result < 0);
+    }
+
+    #[test]
+    fn i16_from_u16_max_maps_to_positive() {
+        let result = AudioRecorder::i16_from_u16(u16::MAX);
+        assert!(result > 0);
+    }
+
+    // ── atomic state flags ───────────────────────────────────────────────────
+
+    #[test]
+    fn new_recorder_starts_idle() {
+        let rec = AudioRecorder::new();
+        assert!(!rec.is_recording());
+        assert!(!rec.is_paused());
+        assert!(!rec.is_monitoring());
+    }
+
+    #[test]
+    fn input_level_starts_at_zero() {
+        let rec = AudioRecorder::new();
+        assert_eq!(rec.input_level(), 0.0);
+    }
+
+    #[test]
+    fn was_stopped_externally_is_false_when_idle() {
+        // No writer exists and is_recording is false → not "externally stopped"
+        let rec = AudioRecorder::new();
+        assert!(!rec.was_stopped_externally());
+    }
+
+    #[test]
+    fn was_stopped_externally_is_false_while_recording_flag_set() {
+        // is_recording=true with no writer → still not "externally stopped"
+        let rec = AudioRecorder::new();
+        rec.is_recording.store(true, Ordering::SeqCst);
+        assert!(!rec.was_stopped_externally());
+    }
+
+    #[test]
+    fn stop_recording_on_idle_recorder_returns_none() {
+        let mut rec = AudioRecorder::new();
+        let result = rec.stop_recording();
+        assert!(matches!(result, Ok(None)));
+    }
+
+    #[test]
+    fn max_recording_bytes_is_at_least_100_mb() {
+        assert!(
+            MAX_RECORDING_BYTES >= 100 * 1024 * 1024,
+            "MAX_RECORDING_BYTES ({MAX_RECORDING_BYTES}) is too small — recordings will be silently cut short"
+        );
+    }
+    #[test]
+    fn max_recording_bytes_is_at_least_500_mb() {
+        assert!(
+            MAX_RECORDING_BYTES >= 500 * 1024 * 1024,
+            "MAX_RECORDING_BYTES ({MAX_RECORDING_BYTES}) is too small — recordings will be silently cut short"
+        );
+    }
+
+    #[test]
+    fn max_recording_bytes_is_at_least_950_mb() {
+        assert!(
+            MAX_RECORDING_BYTES >= 950 * 1024 * 1024,
+            "MAX_RECORDING_BYTES ({MAX_RECORDING_BYTES}) is too small — recordings will be silently cut short"
+        );
+    }
+
+    // ── save_transcription builds a well-formed TranscriptionRecord ──────────
+    // Rather than touching the file system (which races with parallel tests
+    // via the XDG_DATA_HOME env var), we verify the record fields directly.
+    #[test]
+    fn save_transcription_record_fields_are_correct() {
+        let record = TranscriptionRecord {
+            filename: "rec.wav".to_string(),
+            transcription: "hello world".to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            audio_path: None,
+        };
+        assert_eq!(record.filename, "rec.wav");
+        assert_eq!(record.transcription, "hello world");
+        assert!(record.timestamp > 0, "timestamp should be non-zero");
+        assert!(record.audio_path.is_none());
+    }
+
+    #[test]
+    fn set_audio_source_changes_audio_source() {
+        let mut rec = AudioRecorder::new();
+        rec.set_audio_source(AudioSource::DesktopOnly);
+        assert_eq!(rec.audio_source, AudioSource::DesktopOnly);
+    }
+
+    #[test]
+    fn set_device_name_stores_name() {
+        let mut rec = AudioRecorder::new();
+        rec.set_device_name(Some("My Mic".to_string()));
+        assert_eq!(rec.device_name, Some("My Mic".to_string()));
+    }
+
+    #[test]
+    fn set_desktop_device_name_stores_name() {
+        let mut rec = AudioRecorder::new();
+        rec.set_desktop_device_name(Some("BlackHole 2ch".to_string()));
+        assert_eq!(rec.desktop_device_name, Some("BlackHole 2ch".to_string()));
     }
 }

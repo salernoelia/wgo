@@ -173,6 +173,7 @@ impl AppConfig {
 mod tests {
     use super::AppConfig;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn has_api_key_is_false_for_blank_and_whitespace() {
@@ -211,5 +212,126 @@ mod tests {
             cfg.recordings_dir_path(),
             PathBuf::from("/tmp/wgo-recordings-test")
         );
+    }
+
+    #[test]
+    fn merged_from_keeps_default_toggle_shortcut_when_blank() {
+        let mut raw = AppConfig::default();
+        raw.toggle_shortcut = "   ".to_string();
+        let merged = AppConfig::merged_from(raw);
+        assert_eq!(merged.toggle_shortcut, AppConfig::default().toggle_shortcut);
+    }
+
+    #[test]
+    fn merged_from_keeps_default_show_window_shortcut_when_blank() {
+        let mut raw = AppConfig::default();
+        raw.show_window_shortcut = String::new();
+        let merged = AppConfig::merged_from(raw);
+        assert_eq!(
+            merged.show_window_shortcut,
+            AppConfig::default().show_window_shortcut
+        );
+    }
+
+    #[test]
+    fn merged_from_uses_non_blank_shortcut_from_saved_config() {
+        let mut raw = AppConfig::default();
+        raw.toggle_shortcut = "Ctrl+R".to_string();
+        let merged = AppConfig::merged_from(raw);
+        assert_eq!(merged.toggle_shortcut, "Ctrl+R");
+    }
+
+    // ── serialization round-trip via explicit file path ─────────────────────
+    // We call read_config/write directly rather than load() to avoid depending
+    // on the platform-specific app data directory (~/Library on macOS, etc.).
+
+    fn write_config(cfg: &AppConfig, path: &std::path::Path) {
+        let json = serde_json::to_string_pretty(cfg).expect("serialize");
+        std::fs::write(path, json).expect("write");
+    }
+
+    #[test]
+    fn round_trip_preserves_api_key_and_paths() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("config.json");
+
+        let mut cfg = AppConfig::default();
+        cfg.groq_api_key = "test-key-abc".to_string();
+        cfg.recordings_dir = "/custom/recordings".to_string();
+        cfg.markdown_dir = "/custom/markdown".to_string();
+        cfg.minimize_on_stop = true;
+        write_config(&cfg, &path);
+
+        let loaded = AppConfig::read_config(&path).expect("read");
+        assert_eq!(loaded.groq_api_key, "test-key-abc");
+        assert_eq!(loaded.recordings_dir, "/custom/recordings");
+        assert_eq!(loaded.markdown_dir, "/custom/markdown");
+        assert!(loaded.minimize_on_stop);
+    }
+
+    #[test]
+    fn round_trip_preserves_hold_to_record_key() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("config.json");
+
+        let mut cfg = AppConfig::default();
+        cfg.hold_to_record_key = Some("F13".to_string());
+        write_config(&cfg, &path);
+
+        let loaded = AppConfig::read_config(&path).expect("read");
+        assert_eq!(loaded.hold_to_record_key.as_deref(), Some("F13"));
+    }
+
+    #[test]
+    fn round_trip_preserves_none_hold_to_record_key() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("config.json");
+
+        let mut cfg = AppConfig::default();
+        cfg.hold_to_record_key = None;
+        write_config(&cfg, &path);
+
+        let loaded = AppConfig::read_config(&path).expect("read");
+        assert!(loaded.hold_to_record_key.is_none());
+    }
+
+    #[test]
+    fn read_config_returns_none_when_file_missing() {
+        let tmp = tempdir().expect("tempdir");
+        assert!(AppConfig::read_config(&tmp.path().join("nope.json")).is_none());
+    }
+
+    #[test]
+    fn read_config_returns_none_on_corrupt_json() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("config.json");
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(AppConfig::read_config(&path).is_none());
+    }
+
+    // ── ensure_recordings_dir creates missing directory ──────────────────────
+
+    #[test]
+    fn ensure_recordings_dir_creates_directory() {
+        let tmp = tempdir().expect("tempdir");
+        let target = tmp.path().join("nested").join("recordings");
+
+        let mut cfg = AppConfig::default();
+        cfg.recordings_dir = target.to_string_lossy().to_string();
+
+        let result = cfg.ensure_recordings_dir().expect("ensure_recordings_dir");
+        assert_eq!(result, target);
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn ensure_recordings_dir_is_idempotent() {
+        let tmp = tempdir().expect("tempdir");
+        let mut cfg = AppConfig::default();
+        cfg.recordings_dir = tmp.path().to_string_lossy().to_string();
+
+        // Calling twice must succeed even though directory already exists.
+        cfg.ensure_recordings_dir().expect("first call");
+        cfg.ensure_recordings_dir().expect("second call");
     }
 }
