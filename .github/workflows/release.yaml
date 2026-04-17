@@ -2,15 +2,53 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches:
+      - main
+    paths:
+      - 'Cargo.toml'
 
 permissions:
   contents: write
 
 jobs:
+  create-tag:
+    name: Create version tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      tag_exists: ${{ steps.check_tag.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from Cargo.toml
+        id: get_version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          if git tag | grep -q "^${{ steps.get_version.outputs.version }}$"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and push tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.get_version.outputs.version }}"
+          git push origin "${{ steps.get_version.outputs.version }}"
+
   build:
     name: Build and Release
+    needs: create-tag
+    if: needs.create-tag.outputs.tag_exists == 'false'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -58,12 +96,13 @@ jobs:
       - name: Bundle macOS .app
         if: matrix.os == 'macos-latest'
         run: |
+          VERSION="${{ needs.create-tag.outputs.version }}"
           APP=wgo.app
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
           cp target/release/wgo "$APP/Contents/MacOS/wgo"
           cp assets/icon.icns "$APP/Contents/Resources/icon.icns"
-          cat > "$APP/Contents/Info.plist" << 'EOF'
+          cat > "$APP/Contents/Info.plist" << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
             "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -72,7 +111,8 @@ jobs:
             <key>CFBundleName</key>          <string>wgo</string>
             <key>CFBundleExecutable</key>    <string>wgo</string>
             <key>CFBundleIdentifier</key>    <string>com.yourname.wgo</string>
-            <key>CFBundleVersion</key>       <string>1.0</string>
+            <key>CFBundleVersion</key>       <string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key> <string>${VERSION}</string>
             <key>CFBundlePackageType</key>   <string>APPL</string>
             <key>CFBundleIconFile</key>      <string>icon</string>
             <key>NSMicrophoneUsageDescription</key>
@@ -92,7 +132,7 @@ jobs:
           CARGO_INCREMENTAL: "0"
         run: cargo build --release
         shell: bash
-        
+
       - name: Rename binary (Windows)
         if: matrix.os == 'windows-latest'
         run: cp target/release/wgo.exe wgo-windows.exe
@@ -101,6 +141,7 @@ jobs:
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.create-tag.outputs.version }}
           fail_on_unmatched_files: true
           files: ${{ matrix.artifact_name }}
         env:

@@ -124,20 +124,6 @@ impl AudioRecorder {
         self.level_milli.load(Ordering::SeqCst) as f32 / 1000.0
     }
 
-    pub fn save_transcription(filename: &str, transcription: &str) {
-        let mut history = TranscriptionHistory::load();
-        let record = TranscriptionRecord {
-            filename: filename.to_string(),
-            transcription: transcription.to_string(),
-            timestamp: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            audio_path: None,
-        };
-        history.add_record(record);
-    }
-
     fn i16_from_f32(sample: f32) -> i16 {
         let clamped = sample.clamp(-1.0, 1.0);
         (clamped * i16::MAX as f32) as i16
@@ -860,7 +846,6 @@ impl AudioRecorder {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
-    use tempfile::tempdir;
 
     #[test]
     fn i16_from_f32_maps_positive_one_to_max() {
