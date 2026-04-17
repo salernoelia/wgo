@@ -1438,7 +1438,7 @@ impl WgoApp {
                     .map(|e| e.to_lowercase())
                     .unwrap_or_default();
                 self.status_line = format!(
-                    "Unsupported file type: .{ext}. Supported: mp3, wav, m4a, ogg, flac, webm, mp4, mov, m4v, mkv, avi, mpg"
+                    "Unsupported file type: .{ext}. Supported: mp3, wav, m4a, ogg, opus, flac, webm, mp4, mov, m4v, mkv, avi, mpg, mpeg, f4v, flv, ts, mts, m2ts, wmv, 3gp, ogv, rm, vob"
                 );
                 continue;
             }

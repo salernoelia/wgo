@@ -10,7 +10,11 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SUPPORTED_AUDIO_EXTS: [&str; 7] = ["mp3", "wav", "m4a", "ogg", "opus", "flac", "webm"];
-const SUPPORTED_VIDEO_EXTS: [&str; 7] = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg"];
+const SUPPORTED_VIDEO_EXTS: [&str; 19] = [
+    "mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg",
+    "f4v", "flv", "ts", "mts", "m2ts", "wmv", "3gp", "ogv",
+    "rm", "rmvb", "vob",
+];
 
 fn mime_for_ext(ext: &str) -> &'static str {
     match ext.to_lowercase().as_str() {
@@ -63,7 +67,7 @@ fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::e
         .unwrap_or("video");
     let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
     let pid = std::process::id();
-    let output_path = std::env::temp_dir().join(format!("wgo_extract_{stem}_{pid}_{ts}.wav"));
+    let output_path = std::env::temp_dir().join(format!("wgo_extract_{stem}_{pid}_{ts}.m4a"));
 
     let ffmpeg_args = FFmpegBuilder::new()
         .map_err(|e| {
@@ -75,9 +79,10 @@ fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::e
         .output(
             Output::new(output_path.to_string_lossy().to_string())
                 .no_video()
-                .audio_codec(Codec::new("pcm_s16le"))
+                .audio_codec(Codec::new("aac"))
                 .option("ac", "1")
-                .option("ar", "16000"),
+                .option("ar", "16000")
+                .option("b:a", "12k"),
         )
         .overwrite()
         .build_args()
