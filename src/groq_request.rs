@@ -10,7 +10,11 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SUPPORTED_AUDIO_EXTS: [&str; 7] = ["mp3", "wav", "m4a", "ogg", "opus", "flac", "webm"];
-const SUPPORTED_VIDEO_EXTS: [&str; 7] = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg"];
+const SUPPORTED_VIDEO_EXTS: [&str; 19] = [
+    "mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg",
+    "f4v", "flv", "ts", "mts", "m2ts", "wmv", "3gp", "ogv",
+    "rm", "rmvb", "vob",
+];
 
 fn mime_for_ext(ext: &str) -> &'static str {
     match ext.to_lowercase().as_str() {
