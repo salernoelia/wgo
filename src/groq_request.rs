@@ -67,7 +67,7 @@ fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::e
         .unwrap_or("video");
     let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
     let pid = std::process::id();
-    let output_path = std::env::temp_dir().join(format!("wgo_extract_{stem}_{pid}_{ts}.wav"));
+    let output_path = std::env::temp_dir().join(format!("wgo_extract_{stem}_{pid}_{ts}.m4a"));
 
     let ffmpeg_args = FFmpegBuilder::new()
         .map_err(|e| {
@@ -79,9 +79,10 @@ fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::e
         .output(
             Output::new(output_path.to_string_lossy().to_string())
                 .no_video()
-                .audio_codec(Codec::new("pcm_s16le"))
+                .audio_codec(Codec::new("aac"))
                 .option("ac", "1")
-                .option("ar", "16000"),
+                .option("ar", "16000")
+                .option("b:a", "12k"),
         )
         .overwrite()
         .build_args()
