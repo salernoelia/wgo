@@ -59,7 +59,45 @@ pub fn is_supported_media_file(file_path: &str) -> bool {
             .any(|candidate| candidate == &ext)
 }
 
+fn find_ffmpeg() -> Option<PathBuf> {
+    // Check PATH first (works in terminal-launched contexts)
+    if let Ok(p) = which::which("ffmpeg") {
+        return Some(p);
+    }
+    // macOS GUI apps don't inherit shell PATH — probe common install locations
+    let candidates = [
+        "/opt/homebrew/bin/ffmpeg",   // Apple Silicon Homebrew
+        "/usr/local/bin/ffmpeg",       // Intel Homebrew / manual installs
+        "/usr/bin/ffmpeg",
+        "/opt/local/bin/ffmpeg",       // MacPorts
+    ];
+    for path in candidates {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let ffmpeg_path = find_ffmpeg().ok_or_else(|| {
+        "ffmpeg not found. Install it with: brew install ffmpeg".to_string()
+    })?;
+
+    // Ensure the directory containing ffmpeg is on PATH so rust_ffmpeg's
+    // internal `which` call succeeds (needed for macOS GUI app launches).
+    if let Some(dir) = ffmpeg_path.parent() {
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let dir_str = dir.to_string_lossy();
+        if !current_path.split(':').any(|p| p == dir_str.as_ref()) {
+            std::env::set_var(
+                "PATH",
+                format!("{dir_str}:{current_path}"),
+            );
+        }
+    }
+
     let stem = input_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -88,7 +126,7 @@ fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::e
         .build_args()
         .map_err(|e| format!("Failed to build ffmpeg extraction command: {e}"))?;
 
-    let output = Command::new("ffmpeg")
+    let output = Command::new(&ffmpeg_path)
         .args(ffmpeg_args)
         .output()
         .map_err(|e| {
