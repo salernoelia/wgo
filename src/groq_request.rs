@@ -1,7 +1,6 @@
 use crate::config::AppConfig;
 use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::Client;
-use rust_ffmpeg::{Codec, FFmpegBuilder, Output};
 use serde_json::Value;
 use std::fs::File;
 use std::io::Read;
@@ -85,19 +84,6 @@ fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::e
         "ffmpeg not found. Install it with: brew install ffmpeg".to_string()
     })?;
 
-    // Ensure the directory containing ffmpeg is on PATH so rust_ffmpeg's
-    // internal `which` call succeeds (needed for macOS GUI app launches).
-    if let Some(dir) = ffmpeg_path.parent() {
-        let current_path = std::env::var("PATH").unwrap_or_default();
-        let dir_str = dir.to_string_lossy();
-        if !current_path.split(':').any(|p| p == dir_str.as_ref()) {
-            std::env::set_var(
-                "PATH",
-                format!("{dir_str}:{current_path}"),
-            );
-        }
-    }
-
     let stem = input_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -107,27 +93,20 @@ fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::e
     let pid = std::process::id();
     let output_path = std::env::temp_dir().join(format!("wgo_extract_{stem}_{pid}_{ts}.m4a"));
 
-    let ffmpeg_args = FFmpegBuilder::new()
-        .map_err(|e| {
-            format!(
-                "Failed to initialize ffmpeg (via rust_ffmpeg). Install ffmpeg and try again. Details: {e}"
-            )
-        })?
-        .input_path(input_path.to_string_lossy().to_string())
-        .output(
-            Output::new(output_path.to_string_lossy().to_string())
-                .no_video()
-                .audio_codec(Codec::new("aac"))
-                .option("ac", "1")
-                .option("ar", "16000")
-                .option("b:a", "12k"),
-        )
-        .overwrite()
-        .build_args()
-        .map_err(|e| format!("Failed to build ffmpeg extraction command: {e}"))?;
-
+    // Invoke ffmpeg directly using the resolved path — avoids rust_ffmpeg's
+    // internal which() call that fails in macOS GUI apps without full shell PATH.
     let output = Command::new(&ffmpeg_path)
-        .args(ffmpeg_args)
+        .args([
+            "-y",
+            "-i",
+            &input_path.to_string_lossy(),
+            "-vn",
+            "-acodec", "aac",
+            "-ac", "1",
+            "-ar", "16000",
+            "-b:a", "12k",
+            &output_path.to_string_lossy(),
+        ])
         .output()
         .map_err(|e| {
             format!(
