@@ -29,7 +29,9 @@ fn main() {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("wgo")
         .with_inner_size([620.0, 480.0])
-        .with_min_inner_size([620.0, 480.0]);
+        // Keep the minimum small from startup so Wayland compositors that
+        // ignore lowering min-size at runtime can still shrink for recording mode.
+        .with_min_inner_size([420.0, 130.0]);
 
     if let Some(icon) = load_app_icon() {
         viewport = viewport.with_icon(icon);

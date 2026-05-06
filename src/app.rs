@@ -1,7 +1,11 @@
 use crate::audio_recorder::{AudioRecorder, AudioSource};
 use crate::config::AppConfig;
+#[cfg(not(target_os = "macos"))]
+use crate::shortcut_detector::ShortcutCaptureTarget;
+#[cfg(target_os = "macos")]
+use crate::shortcut_detector::is_accessibility_trusted;
 use crate::shortcut_detector::{
-    is_accessibility_trusted, HotkeyBindings, HotkeyCommand, HotkeyRuntime,
+    HotkeyBindings, HotkeyCommand, HotkeyRuntime,
 };
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use chrono::Local;
@@ -246,6 +250,25 @@ impl WgoApp {
                     self.recording_target = None;
                     self.status_line = "Hold key captured. Save settings to apply.".to_string();
                 }
+                HotkeyCommand::ShortcutCaptured { target, shortcut } => {
+                    match target {
+                        #[cfg(not(target_os = "macos"))]
+                        ShortcutCaptureTarget::Toggle => {
+                            self.pending_toggle_shortcut = shortcut;
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        ShortcutCaptureTarget::ShowWindow => {
+                            self.pending_show_shortcut = shortcut;
+                        }
+                        #[cfg(target_os = "macos")]
+                        _ => {
+                            self.pending_toggle_shortcut = shortcut;
+                        }
+                    }
+                    self.recording_target = None;
+                    self.status_line =
+                        "Shortcut captured. Save settings to apply globally.".to_string();
+                }
                 HotkeyCommand::AccessibilityRequired => {
                     self.status_line =
                         "Hold-to-record needs Accessibility permission. See Settings.".to_string();
@@ -256,6 +279,7 @@ impl WgoApp {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn apply_shortcut_recording(&mut self, ctx: &egui::Context) {
         let Some(target) = self.recording_target else {
             return;
@@ -296,6 +320,9 @@ impl WgoApp {
             }
         }
     }
+
+    #[cfg(not(target_os = "macos"))]
+    fn apply_shortcut_recording(&mut self, _ctx: &egui::Context) {}
 
     fn apply_ui_events(&mut self) {
         while let Ok(event) = self.ui_event_rx.try_recv() {
@@ -1024,6 +1051,9 @@ impl WgoApp {
                 self.recording_target = Some(ShortcutTarget::Toggle);
                 self.status_line =
                     "Press a shortcut (must include at least one modifier).".to_string();
+                #[cfg(not(target_os = "macos"))]
+                self.hotkey_runtime
+                    .start_capture_shortcut(ShortcutCaptureTarget::Toggle);
             }
         });
 
@@ -1035,6 +1065,9 @@ impl WgoApp {
                 self.recording_target = Some(ShortcutTarget::ShowWindow);
                 self.status_line =
                     "Press a shortcut (must include at least one modifier).".to_string();
+                #[cfg(not(target_os = "macos"))]
+                self.hotkey_runtime
+                    .start_capture_shortcut(ShortcutCaptureTarget::ShowWindow);
             }
         });
 
@@ -1846,7 +1879,13 @@ fn key_event_to_shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<S
     if modifiers.shift {
         parts.push("Shift");
     }
+    #[cfg(target_os = "macos")]
     if modifiers.mac_cmd || modifiers.command {
+        parts.push("Meta");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    if modifiers.mac_cmd {
         parts.push("Meta");
     }
 

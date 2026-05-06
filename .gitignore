@@ -8,3 +8,5 @@ transcription_history.json
 cargo.lock
 
 .DS_Store
+Cargo.lock
+packaging/wgo.desktop

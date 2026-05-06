@@ -54,15 +54,18 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: wgo-linux
+            artifact_files: |
+              wgo-linux
+              wgo-linux.tar.gz
+              wgo-linux.deb
             binary_path: target/release/wgo
 
           - os: macos-latest
-            artifact_name: wgo-macos.app.tar.gz
+            artifact_files: wgo-macos.app.tar.gz
             binary_path: target/release/wgo
 
           - os: windows-latest
-            artifact_name: wgo-windows.exe
+            artifact_files: wgo-windows.exe
             binary_path: target/release/wgo.exe
 
     steps:
@@ -126,6 +129,21 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cp target/release/wgo wgo-linux
 
+      - name: Create Linux tarball
+        if: matrix.os == 'ubuntu-latest'
+        run: tar -czf wgo-linux.tar.gz wgo-linux README.md LICENSE
+
+      - name: Install cargo-deb (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo install cargo-deb --locked
+
+      - name: Build .deb package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo deb --no-build
+          DEB_PATH=$(ls target/debian/*.deb | head -1)
+          cp "$DEB_PATH" wgo-linux.deb
+
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
         env:
@@ -143,6 +161,6 @@ jobs:
         with:
           tag_name: ${{ needs.create-tag.outputs.version }}
           fail_on_unmatched_files: true
-          files: ${{ matrix.artifact_name }}
+          files: ${{ matrix.artifact_files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

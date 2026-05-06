@@ -49,3 +49,16 @@ rustflags = ["-C", "link-arg=/DEBUG:NONE"]
 [profile.release]
 debug = false
 strip = "symbols"
+
+[package.metadata.deb]
+maintainer = "Elia Salerno"
+section = "utility"
+priority = "optional"
+assets = [
+	["target/release/wgo", "usr/bin/wgo", "755"],
+	["icon.png", "usr/share/icons/hicolor/512x512/apps/wgo.png", "644"],
+	["packaging/wgo.desktop", "usr/share/applications/wgo.desktop", "644"],
+	["README.md", "usr/share/doc/wgo/README.md", "644"],
+	["LICENSE", "usr/share/doc/wgo/LICENSE", "644"],
+]
+depends = "libasound2, libx11-6, libxi6, libxtst6, libxinerama1, libxcursor1, libxrandr2, libxkbcommon0, libwayland-client0, libgl1, libssl3"

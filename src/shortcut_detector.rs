@@ -11,6 +11,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 #[cfg(not(target_os = "macos"))]
 use std::sync::RwLock;
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
@@ -23,6 +24,10 @@ pub enum HotkeyCommand {
     StartHoldRecording,
     StopHoldRecording,
     HoldKeyCaptured(String),
+    ShortcutCaptured {
+        target: ShortcutCaptureTarget,
+        shortcut: String,
+    },
     /// macOS only: rdev listener could not start — accessibility permission not granted.
     AccessibilityRequired,
 }
@@ -86,6 +91,7 @@ impl HotkeyBindings {
 enum RuntimeControl {
     Rebind(HotkeyBindings),
     StartCaptureHoldKey,
+    StartCaptureShortcut(ShortcutCaptureTarget),
 }
 
 pub struct HotkeyRuntime {
@@ -104,6 +110,19 @@ impl HotkeyRuntime {
     pub fn start_capture_hold_key(&self) {
         let _ = self.control_tx.send(RuntimeControl::StartCaptureHoldKey);
     }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn start_capture_shortcut(&self, target: ShortcutCaptureTarget) {
+        let _ = self
+            .control_tx
+            .send(RuntimeControl::StartCaptureShortcut(target));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutCaptureTarget {
+    Toggle,
+    ShowWindow,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -114,6 +133,8 @@ pub struct ShortcutDetector {
     shift_pressed: AtomicBool,
     bindings: RwLock<HotkeyBindings>,
     capture_mode: AtomicBool,
+    shortcut_capture_target: RwLock<Option<ShortcutCaptureTarget>>,
+    shortcut_capture_active: AtomicBool,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -126,6 +147,8 @@ impl ShortcutDetector {
             shift_pressed: AtomicBool::new(false),
             bindings: RwLock::new(bindings),
             capture_mode: AtomicBool::new(false),
+            shortcut_capture_target: RwLock::new(None),
+            shortcut_capture_active: AtomicBool::new(false),
         }
     }
 
@@ -148,11 +171,38 @@ impl ShortcutDetector {
         self.capture_mode.store(true, Ordering::SeqCst);
     }
 
+    pub fn set_capture_shortcut(&self, target: ShortcutCaptureTarget) {
+        if let Ok(mut guard) = self.shortcut_capture_target.write() {
+            *guard = Some(target);
+        }
+        self.shortcut_capture_active.store(true, Ordering::SeqCst);
+    }
+
     pub fn handle_event(&self, event: Event) -> Option<HotkeyCommand> {
         // Handle capture mode: intercept the next key press
         if let EventType::KeyPress(key) = event.event_type {
             if self.capture_mode.swap(false, Ordering::SeqCst) {
                 return Some(HotkeyCommand::HoldKeyCaptured(format!("{:?}", key)));
+            }
+        }
+
+        if let EventType::KeyPress(key) = event.event_type {
+            if self.shortcut_capture_active.load(Ordering::SeqCst) {
+                if !is_modifier_key(key) {
+                    let target = self.shortcut_capture_target.read().ok().and_then(|g| *g);
+
+                    if let Some(target) = target {
+                        let mods = self.current_modifiers();
+                        if let Some(shortcut) = shortcut_from_mods_and_key(mods, key) {
+                            self.shortcut_capture_active.store(false, Ordering::SeqCst);
+                            if let Ok(mut guard) = self.shortcut_capture_target.write() {
+                                *guard = None;
+                            }
+                            return Some(HotkeyCommand::ShortcutCaptured { target, shortcut });
+                        }
+                        return None;
+                    }
+                }
             }
         }
 
@@ -228,6 +278,32 @@ impl ShortcutDetector {
 
         None
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn shortcut_from_mods_and_key(mods: ParsedModifiers, key: Key) -> Option<String> {
+    let key_text = rdev_key_to_shortcut_name(key)?;
+    let mut parts: Vec<&str> = Vec::new();
+
+    if mods.ctrl {
+        parts.push("Ctrl");
+    }
+    if mods.alt {
+        parts.push("Alt");
+    }
+    if mods.shift {
+        parts.push("Shift");
+    }
+    if mods.meta {
+        parts.push("Meta");
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    parts.push(key_text);
+    Some(parts.join("+"))
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -375,6 +451,66 @@ pub fn rdev_key_from_name(name: &str) -> Option<Key> {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn rdev_key_to_shortcut_name(key: Key) -> Option<&'static str> {
+    match key {
+        Key::KeyA => Some("A"),
+        Key::KeyB => Some("B"),
+        Key::KeyC => Some("C"),
+        Key::KeyD => Some("D"),
+        Key::KeyE => Some("E"),
+        Key::KeyF => Some("F"),
+        Key::KeyG => Some("G"),
+        Key::KeyH => Some("H"),
+        Key::KeyI => Some("I"),
+        Key::KeyJ => Some("J"),
+        Key::KeyK => Some("K"),
+        Key::KeyL => Some("L"),
+        Key::KeyM => Some("M"),
+        Key::KeyN => Some("N"),
+        Key::KeyO => Some("O"),
+        Key::KeyP => Some("P"),
+        Key::KeyQ => Some("Q"),
+        Key::KeyR => Some("R"),
+        Key::KeyS => Some("S"),
+        Key::KeyT => Some("T"),
+        Key::KeyU => Some("U"),
+        Key::KeyV => Some("V"),
+        Key::KeyW => Some("W"),
+        Key::KeyX => Some("X"),
+        Key::KeyY => Some("Y"),
+        Key::KeyZ => Some("Z"),
+        Key::Space => Some("Space"),
+        Key::Tab => Some("Tab"),
+        Key::Return => Some("Return"),
+        Key::Escape => Some("Escape"),
+        Key::Backspace => Some("Backspace"),
+        Key::F1 => Some("F1"),
+        Key::F2 => Some("F2"),
+        Key::F3 => Some("F3"),
+        Key::F4 => Some("F4"),
+        Key::F5 => Some("F5"),
+        Key::F6 => Some("F6"),
+        Key::F7 => Some("F7"),
+        Key::F8 => Some("F8"),
+        Key::F9 => Some("F9"),
+        Key::F10 => Some("F10"),
+        Key::F11 => Some("F11"),
+        Key::F12 => Some("F12"),
+        Key::Num0 => Some("0"),
+        Key::Num1 => Some("1"),
+        Key::Num2 => Some("2"),
+        Key::Num3 => Some("3"),
+        Key::Num4 => Some("4"),
+        Key::Num5 => Some("5"),
+        Key::Num6 => Some("6"),
+        Key::Num7 => Some("7"),
+        Key::Num8 => Some("8"),
+        Key::Num9 => Some("9"),
+        _ => None,
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn code_from_name(name: &str) -> Option<Code> {
     match name {
@@ -503,7 +639,10 @@ pub fn start_global_hotkeys(
     {
         // Shared state for hold key listener
         let hold_key_shared: Arc<RwLock<Option<Key>>> = Arc::new(RwLock::new(
-            initial.hold_to_record_key.as_deref().and_then(rdev_key_from_name),
+            initial
+                .hold_to_record_key
+                .as_deref()
+                .and_then(rdev_key_from_name),
         ));
         let capture_mode: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
@@ -557,7 +696,10 @@ pub fn start_global_hotkeys(
                         RuntimeControl::Rebind(bindings) => {
                             // Update shared hold key
                             if let Ok(mut guard) = hold_key_for_ctrl.write() {
-                                *guard = bindings.hold_to_record_key.as_deref().and_then(rdev_key_from_name);
+                                *guard = bindings
+                                    .hold_to_record_key
+                                    .as_deref()
+                                    .and_then(rdev_key_from_name);
                             }
                             apply_bindings_macos(
                                 &manager,
@@ -570,6 +712,7 @@ pub fn start_global_hotkeys(
                         RuntimeControl::StartCaptureHoldKey => {
                             capture_for_ctrl.store(true, Ordering::SeqCst);
                         }
+                        RuntimeControl::StartCaptureShortcut(_) => {}
                     }
                 }
 
@@ -649,10 +792,7 @@ pub fn start_global_hotkeys(
                             return;
                         }
 
-                        let hold_key_opt = hold_key_for_listen
-                            .read()
-                            .ok()
-                            .and_then(|g| *g);
+                        let hold_key_opt = hold_key_for_listen.read().ok().and_then(|g| *g);
 
                         if let Some(hold_key) = hold_key_opt {
                             if key == hold_key {
@@ -662,8 +802,7 @@ pub fn start_global_hotkeys(
                                     .ok()
                                     .and_then(|t| *t)
                                     .map(|t| {
-                                        t.elapsed()
-                                            < Duration::from_millis(RECENT_KEY_WINDOW_MS)
+                                        t.elapsed() < Duration::from_millis(RECENT_KEY_WINDOW_MS)
                                     })
                                     .unwrap_or(false);
 
@@ -688,10 +827,7 @@ pub fn start_global_hotkeys(
                         }
                     }
                     EventType::KeyRelease(key) => {
-                        let hold_key_opt = hold_key_for_listen
-                            .read()
-                            .ok()
-                            .and_then(|g| *g);
+                        let hold_key_opt = hold_key_for_listen.read().ok().and_then(|g| *g);
 
                         if let Some(hold_key) = hold_key_opt {
                             if key == hold_key {
@@ -760,6 +896,9 @@ pub fn start_global_hotkeys(
                 match msg {
                     RuntimeControl::Rebind(bindings) => detector.update_bindings(bindings),
                     RuntimeControl::StartCaptureHoldKey => detector.set_capture_mode(),
+                    RuntimeControl::StartCaptureShortcut(target) => {
+                        detector.set_capture_shortcut(target)
+                    }
                 }
             }
         });
