@@ -1,12 +1,10 @@
 use crate::audio_recorder::{AudioRecorder, AudioSource};
 use crate::config::AppConfig;
-#[cfg(not(target_os = "macos"))]
-use crate::shortcut_detector::ShortcutCaptureTarget;
 #[cfg(target_os = "macos")]
 use crate::shortcut_detector::is_accessibility_trusted;
-use crate::shortcut_detector::{
-    HotkeyBindings, HotkeyCommand, HotkeyRuntime,
-};
+#[cfg(not(target_os = "macos"))]
+use crate::shortcut_detector::ShortcutCaptureTarget;
+use crate::shortcut_detector::{HotkeyBindings, HotkeyCommand, HotkeyRuntime};
 use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use chrono::Local;
 use eframe::egui;
