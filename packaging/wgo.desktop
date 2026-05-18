@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=wgo
+GenericName=Audio Recorder and Transcriber
+Comment=Record audio and transcribe using Groq Whisper
+Exec=/usr/bin/wgo %U
+Icon=wgo
+Terminal=false
+Type=Application
+Categories=AudioVideo;Utility;
+MimeType=audio/mpeg;audio/x-wav;audio/ogg;audio/flac;video/mp4;video/x-matroska;video/quicktime;
