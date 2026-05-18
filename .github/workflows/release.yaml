@@ -4,8 +4,12 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
+      - '[0-9]*'
     paths:
       - 'Cargo.toml'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -38,7 +42,7 @@ jobs:
           fi
 
       - name: Create and push tag
-        if: steps.check_tag.outputs.exists == 'false'
+        if: github.ref_type != 'tag' && steps.check_tag.outputs.exists == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -48,7 +52,10 @@ jobs:
   build:
     name: Build and Release
     needs: create-tag
-    if: needs.create-tag.outputs.tag_exists == 'false'
+    if: |
+      always() &&
+      (needs.create-tag.result == 'success') &&
+      (needs.create-tag.outputs.tag_exists == 'false' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
