@@ -1,0 +1,76 @@
+---
+config:
+  layout: elk
+---
+
+flowchart TD
+    %% Styling Definitions
+    classDef ui fill:#edf2f7,stroke:#4a5568,stroke-width:2px
+    classDef worker fill:#ebf8ff,stroke:#2b6cb0,stroke-width:2px
+    classDef ext fill:#fff5f5,stroke:#c53030,stroke-width:2px
+    classDef storage fill:#f0fff4,stroke:#2f855a,stroke-width:2px
+    classDef os fill:#f7fafc,stroke:#718096,stroke-width:1px,stroke-dasharray:5
+
+    %% Subgraph - Host OS & Hardware Boundary
+    subgraph OS [Host OS & Hardware]
+        InputDevices[Input Devices <br/> Mic / Loopback]
+        GlobalKeys[Global Shortcuts <br/> Alt+Space / Alt+H / Hold-key]
+        DroppedFiles[Drag & Drop Files <br/> Audio / Video]
+    end
+    class OS os
+
+    %% Subgraph - Main GUI Thread
+    subgraph GUI [GUI Thread - egui]
+        WgoApp["WgoApp (app.rs) <br/> UI Update Loop & Tabs"]
+        History["TranscriptionHistory <br/> (transcription_history.rs)"]
+        Config["AppConfig <br/> (config.json)"]
+    end
+    class WgoApp,History,Config ui
+
+    %% Subgraph - Background Threads & Subprocesses
+    subgraph Workers [Background & Worker Tasks]
+        HotkeyDetector["Shortcut Detector <br/> (shortcut_detector.rs)"]
+        AudioRec["Audio Recorder <br/> (audio_recorder.rs)"]
+        FfmpegProc["FFmpeg Subprocess <br/> (groq_request.rs)"]
+        TranscribeJob["Transcription Thread <br/> (groq_request.rs)"]
+    end
+    class HotkeyDetector,AudioRec,FfmpegProc,TranscribeJob worker
+
+    %% Subgraph - External Services
+    subgraph Cloud [External Services]
+        GroqAPI["Groq Whisper API <br/> (whisper-large-v3)"]
+    end
+    class GroqAPI ext
+
+    %% Subgraph - Local Outputs
+    subgraph Disk [Local Storage & System Outputs]
+        RecordingsFolder["Recordings Folder <br/> .wav / .m4a"]
+        MDDocs["Markdown Folder <br/> .md docs"]
+        Clipboard["System Clipboard"]
+    end
+    class RecordingsFolder,MDDocs,Clipboard storage
+
+    %% Connections & Flow
+    GlobalKeys -->|rdev or global-hotkey| HotkeyDetector
+    HotkeyDetector -->|mpsc HotkeyCommand| WgoApp
+    DroppedFiles -->|PathBuf| WgoApp
+
+    WgoApp <-->|Load / Save JSON| Config
+    WgoApp <-->|Load / Append JSON| History
+
+    WgoApp -->|Control Stream| AudioRec
+    InputDevices -.->|cpal audio stream| AudioRec
+    AudioRec -->|Writes WAV| RecordingsFolder
+    RecordingsFolder -->|afconvert| RecordingsFolder
+
+    WgoApp -->|Spawns extraction| FfmpegProc
+    FfmpegProc -.->|Extracts audio| RecordingsFolder
+
+    WgoApp -->|Spawns thread| TranscribeJob
+    RecordingsFolder -->|Reads audio data| TranscribeJob
+    TranscribeJob ==>|HTTPS POST Multipart| GroqAPI
+    GroqAPI ==>|Returns JSON text| TranscribeJob
+    TranscribeJob -->|mpsc UiEvent| WgoApp
+
+    WgoApp -->|arboard| Clipboard
+    WgoApp -->|Saves template| MDDocs
