@@ -179,21 +179,13 @@ fn resolve_audio_file_path_with(file_path: &str, recordings_dir: &Path, exe_dir:
     }
 }
 
-pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let config = AppConfig::load();
-    let api_key = config.groq_api_key.trim();
-
-    if api_key.is_empty() {
-        return Err("Groq API key is empty. Set it in the app settings.".into());
-    }
-
+fn send_transcription_request(
+    api_key: &str,
+    audio_file_path: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
     let url = "https://api.groq.com/openai/v1/audio/transcriptions";
 
-    let media_file_path = resolve_audio_file_path(file_path);
-
-    let (audio_file_path, cleanup_path) = prepare_media_for_transcription(&media_file_path)?;
-
-    let mut file = File::open(&audio_file_path)
+    let mut file = File::open(audio_file_path)
         .map_err(|e| format!("Failed to open audio file at {:?}: {}", audio_file_path, e))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
@@ -201,7 +193,7 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
     let file_name = audio_file_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| file_path.to_owned());
+        .unwrap_or_else(|| "audio.m4a".to_string());
 
     let mime = audio_file_path
         .extension()
@@ -222,7 +214,7 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
         .multipart(form)
         .send()?;
 
-    let result = if response.status().is_success() {
+    if response.status().is_success() {
         let json: Value = response.json()?;
 
         if let Some(text) = json.get("text").and_then(Value::as_str) {
@@ -236,6 +228,122 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
             .text()
             .unwrap_or_else(|_| "Unable to read response body".to_string());
         Err(format!("API request failed with status {}: {}", status, error_body).into())
+    }
+}
+
+fn chunk_audio_file(
+    ffmpeg_path: &Path,
+    input_path: &Path,
+    temp_dir: &Path,
+    segment_time_secs: u32,
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(temp_dir)?;
+    
+    let output_pattern = temp_dir.join("chunk_%03d.m4a");
+    
+    let output = Command::new(ffmpeg_path)
+        .args([
+            "-y",
+            "-i",
+            &input_path.to_string_lossy(),
+            "-f", "segment",
+            "-segment_time", &segment_time_secs.to_string(),
+            "-reset_timestamps", "1",
+            "-c:a", "aac",
+            "-ac", "1",
+            "-ar", "16000",
+            "-b:a", "64k",
+            &output_pattern.to_string_lossy(),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Failed to chunk audio file. ffmpeg exited with status {}. Details: {}",
+            output.status,
+            stderr.trim()
+        )
+        .into());
+    }
+
+    // Read the chunk files in alphabetical order
+    let mut chunks = Vec::new();
+    for entry in std::fs::read_dir(temp_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                if file_name.starts_with("chunk_") && file_name.ends_with(".m4a") {
+                    chunks.push(path);
+                }
+            }
+        }
+    }
+    
+    // Sort alphabetically so chunk_000 is first, chunk_001 is second, etc.
+    chunks.sort();
+    
+    Ok(chunks)
+}
+
+pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let config = AppConfig::load();
+    let api_key = config.groq_api_key.trim();
+
+    if api_key.is_empty() {
+        return Err("Groq API key is empty. Set it in the app settings.".into());
+    }
+
+    let media_file_path = resolve_audio_file_path(file_path);
+
+    let (audio_file_path, cleanup_path) = prepare_media_for_transcription(&media_file_path)?;
+
+    // Check size of the audio file to determine if we need to chunk it.
+    let file_metadata = std::fs::metadata(&audio_file_path)
+        .map_err(|e| format!("Failed to read metadata of audio file at {:?}: {}", audio_file_path, e))?;
+    let file_size = file_metadata.len();
+
+    let result = if file_size >= 20 * 1024 * 1024 {
+        // Chunking path
+        let ffmpeg_path = find_ffmpeg().ok_or_else(|| {
+            "ffmpeg not found. Install ffmpeg to transcribe files larger than 20MB.".to_string()
+        })?;
+
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+        let pid = std::process::id();
+        let temp_dir = std::env::temp_dir().join(format!("wgo_chunks_{}_{}", pid, ts));
+
+        let chunk_results = match chunk_audio_file(&ffmpeg_path, &audio_file_path, &temp_dir, 600) {
+            Ok(chunks) => {
+                let mut results = Vec::new();
+                let mut err = None;
+                for chunk in chunks {
+                    match send_transcription_request(api_key, &chunk) {
+                        Ok(text) => results.push(text),
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                if let Some(e) = err {
+                    return Err(e);
+                }
+                results
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(e);
+            }
+        };
+
+        // Combine the results with spaces
+        Ok(chunk_results.join(" "))
+    } else {
+        // Direct transcription path
+        send_transcription_request(api_key, &audio_file_path)
     };
 
     if let Some(path) = cleanup_path {
@@ -319,15 +427,35 @@ mod tests {
                 .unwrap_or_else(|e| panic!("No extracted file {}: {e}", extracted.display()));
             assert!(
                 metadata.len() > 44,
-                "Extracted WAV seems empty for {}",
+                "Extracted audio seems empty for {}",
                 input.display()
             );
 
             let bytes = std::fs::read(&extracted)
                 .unwrap_or_else(|e| panic!("Failed to read {}: {e}", extracted.display()));
-            assert!(bytes.starts_with(b"RIFF"), "Output is not a RIFF WAV file");
+            let has_ftyp = bytes.iter().take(20).copied().collect::<Vec<_>>();
+            let is_m4a = has_ftyp.windows(4).any(|w| w == b"ftyp");
+            assert!(is_m4a, "Output is not a valid M4A/MP4 file");
 
             let _ = std::fs::remove_file(extracted);
+        }
+    }
+
+    #[test]
+    fn test_chunk_audio_file_splitting() {
+        let ffmpeg_path = find_ffmpeg().expect("ffmpeg not found");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_material");
+        let input_path = base.join("test_audio.mp3");
+        assert!(input_path.exists());
+
+        let temp_dir = tempdir().expect("temp dir");
+        let chunks = chunk_audio_file(&ffmpeg_path, &input_path, temp_dir.path(), 1).expect("chunking failed");
+        
+        assert!(!chunks.is_empty(), "Should generate at least one chunk");
+        for chunk in &chunks {
+            assert!(chunk.exists());
+            assert!(chunk.file_name().unwrap().to_str().unwrap().starts_with("chunk_"));
+            assert!(chunk.file_name().unwrap().to_str().unwrap().ends_with(".m4a"));
         }
     }
 }
