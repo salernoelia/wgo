@@ -295,6 +295,17 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
         return Err("Groq API key is empty. Set it in the app settings.".into());
     }
 
+    transcribe_audio_inner(file_path, api_key, send_transcription_request)
+}
+
+fn transcribe_audio_inner<F>(
+    file_path: &str,
+    api_key: &str,
+    send_req: F,
+) -> Result<String, Box<dyn std::error::Error>>
+where
+    F: Fn(&str, &Path) -> Result<String, Box<dyn std::error::Error>>,
+{
     let media_file_path = resolve_audio_file_path(file_path);
 
     let (audio_file_path, cleanup_path) = prepare_media_for_transcription(&media_file_path)?;
@@ -319,7 +330,7 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
                 let mut results = Vec::new();
                 let mut err = None;
                 for chunk in chunks {
-                    match send_transcription_request(api_key, &chunk) {
+                    match send_req(api_key, &chunk) {
                         Ok(text) => results.push(text),
                         Err(e) => {
                             err = Some(e);
@@ -343,7 +354,7 @@ pub fn transcribe_audio(file_path: &str) -> Result<String, Box<dyn std::error::E
         Ok(chunk_results.join(" "))
     } else {
         // Direct transcription path
-        send_transcription_request(api_key, &audio_file_path)
+        send_req(api_key, &audio_file_path)
     };
 
     if let Some(path) = cleanup_path {
@@ -457,5 +468,83 @@ mod tests {
             assert!(chunk.file_name().unwrap().to_str().unwrap().starts_with("chunk_"));
             assert!(chunk.file_name().unwrap().to_str().unwrap().ends_with(".m4a"));
         }
+    }
+
+    #[test]
+    fn test_transcribe_audio_inner_under_limit() {
+        let temp_dir = tempdir().expect("temp dir");
+        let file_path = temp_dir.path().join("test_small.wav");
+        std::fs::write(&file_path, b"dummy audio content").expect("write failed");
+
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let result = transcribe_audio_inner(
+            file_path.to_str().unwrap(),
+            "dummy_api_key",
+            move |key, path| {
+                call_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(key, "dummy_api_key");
+                assert!(path.exists());
+                Ok("transcribed text".to_string())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "transcribed text");
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_transcribe_audio_inner_over_limit_chunking() {
+        let ffmpeg_path = find_ffmpeg();
+        if ffmpeg_path.is_none() {
+            return;
+        }
+
+        let temp_dir = tempdir().expect("temp dir");
+        let file_path = temp_dir.path().join("test_large.wav");
+        
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        
+        {
+            let mut writer = hound::WavWriter::create(&file_path, spec).unwrap();
+            let samples = vec![0i16; 10000];
+            for _ in 0..1100 {
+                for &sample in &samples {
+                    writer.write_sample(sample).unwrap();
+                }
+            }
+            writer.finalize().unwrap();
+        }
+
+        let file_size = std::fs::metadata(&file_path).unwrap().len();
+        assert!(file_size >= 20 * 1024 * 1024, "File size must be >= 20MB, got {}", file_size);
+
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let result = transcribe_audio_inner(
+            file_path.to_str().unwrap(),
+            "dummy_api_key",
+            move |key, path| {
+                let count = call_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(key, "dummy_api_key");
+                assert!(path.exists());
+                Ok(format!("Chunk{}", count))
+            },
+        );
+
+        assert!(result.is_ok());
+        let final_text = result.unwrap();
+        assert!(final_text.contains("Chunk0"));
+        assert!(final_text.contains("Chunk1"));
+        assert!(final_text.contains("Chunk2"));
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }
