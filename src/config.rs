@@ -4,6 +4,13 @@ use std::path::{Path, PathBuf};
 
 use crate::audio_recorder::AudioSource;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AppTheme {
+    #[default]
+    Modern,
+    Classic,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub groq_api_key: String,
@@ -19,6 +26,8 @@ pub struct AppConfig {
     pub show_window_shortcut: String,
     pub minimize_on_stop: bool,
     pub hold_to_record_key: Option<String>,
+    #[serde(default)]
+    pub theme: AppTheme,
 }
 
 impl Default for AppConfig {
@@ -43,6 +52,7 @@ impl Default for AppConfig {
             show_window_shortcut: "Alt+H".to_string(),
             minimize_on_stop: false,
             hold_to_record_key: Some("ControlLeft".to_string()),
+            theme: AppTheme::Modern,
         }
     }
 }
@@ -65,6 +75,7 @@ impl AppConfig {
         }
         merged.minimize_on_stop = cfg.minimize_on_stop;
         merged.hold_to_record_key = cfg.hold_to_record_key;
+        merged.theme = cfg.theme;
         merged
     }
 
