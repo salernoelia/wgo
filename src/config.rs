@@ -182,7 +182,7 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{AppConfig, AppTheme};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -344,5 +344,14 @@ mod tests {
         // Calling twice must succeed even though directory already exists.
         cfg.ensure_recordings_dir().expect("first call");
         cfg.ensure_recordings_dir().expect("second call");
+    }
+
+    #[test]
+    fn round_trip_preserves_theme() {
+        let mut cfg = AppConfig::default();
+        cfg.theme = AppTheme::Classic;
+        let content = serde_json::to_string(&cfg).unwrap();
+        let parsed: AppConfig = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed.theme, AppTheme::Classic);
     }
 }

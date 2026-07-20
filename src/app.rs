@@ -1,5 +1,5 @@
 use crate::audio_recorder::{AudioRecorder, AudioSource};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, AppTheme};
 #[cfg(target_os = "macos")]
 use crate::shortcut_detector::is_accessibility_trusted;
 #[cfg(not(target_os = "macos"))]
@@ -51,6 +51,7 @@ pub struct WgoApp {
     was_recording: bool,
     history_search: String,
     last_audio_path: Option<String>,
+    applied_theme: Option<AppTheme>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -154,6 +155,7 @@ impl WgoApp {
             was_recording: false,
             history_search: String::new(),
             last_audio_path: None,
+            applied_theme: None,
         }
     }
 
@@ -1045,6 +1047,18 @@ impl WgoApp {
             "Minimize window when stopping recording",
         );
 
+        ui.add_space(8.0);
+        ui.label("Theme");
+        egui::ComboBox::from_id_salt("app_theme_combo")
+            .selected_text(match self.config.theme {
+                AppTheme::Modern => "Modern",
+                AppTheme::Classic => "Classic",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.config.theme, AppTheme::Modern, "Modern");
+                ui.selectable_value(&mut self.config.theme, AppTheme::Classic, "Classic");
+            });
+
         ui.add_space(12.0);
         ui.label("Toggle recording shortcut");
         ui.horizontal(|ui| {
@@ -1538,7 +1552,11 @@ impl WgoApp {
         let painter = ui.painter_at(rect);
         let is_recording = self.is_recording();
 
-        let bg = ui.visuals().extreme_bg_color;
+        let bg = if self.config.theme == AppTheme::Classic {
+            egui::Color32::BLACK
+        } else {
+            ui.visuals().extreme_bg_color
+        };
         painter.rect_filled(rect, 0.0, bg);
 
         let wave_color = if is_recording {
@@ -1595,6 +1613,18 @@ impl WgoApp {
 
 impl eframe::App for WgoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.applied_theme != Some(self.config.theme) {
+            match self.config.theme {
+                AppTheme::Modern => {
+                    ctx.set_style(egui::Style::default());
+                }
+                AppTheme::Classic => {
+                    apply_classic_theme(ctx);
+                }
+            }
+            self.applied_theme = Some(self.config.theme);
+        }
+
         ctx.request_repaint_after(Duration::from_millis(50));
         self.apply_hotkeys(ctx);
         self.apply_ui_events();
@@ -1965,6 +1995,64 @@ fn save_transcription_markdown(
 
 fn has_non_empty_api_key(config: &AppConfig) -> bool {
     config.has_api_key()
+}
+
+fn apply_classic_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    
+    // Background colors
+    let bg_color = egui::Color32::from_rgb(192, 192, 192); // Win95 light gray
+    style.visuals.panel_fill = bg_color;
+    style.visuals.window_fill = bg_color;
+    style.visuals.extreme_bg_color = egui::Color32::WHITE; // Textboxes, inputs
+    
+    // Text colors
+    style.visuals.override_text_color = Some(egui::Color32::BLACK);
+    
+    // Disable shadows
+    let no_shadow = egui::Shadow {
+        offset: [0, 0],
+        blur: 0,
+        spread: 0,
+        color: egui::Color32::TRANSPARENT,
+    };
+    style.visuals.window_shadow = no_shadow;
+    style.visuals.popup_shadow = no_shadow;
+
+    // Zero out all roundings for that retro sharp box look
+    style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::ZERO;
+    style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
+    style.visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
+    style.visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
+    style.visuals.window_corner_radius = egui::CornerRadius::ZERO;
+
+    // Fill colors for active/inactive/hovered widgets
+    // Inactive (standard button/widgets)
+    style.visuals.widgets.inactive.bg_fill = bg_color;
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(128, 128, 128)); // gray border
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
+
+    // Hovered
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(220, 220, 220); // lighter gray
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, egui::Color32::BLACK); // black border on hover
+    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
+
+    // Active (pressed button/active widget)
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(160, 160, 160); // darker gray
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
+    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
+
+    // Dropdowns/menus open
+    style.visuals.widgets.open.bg_fill = bg_color;
+    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(128, 128, 128));
+    style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
+
+    // Win95 selected item background (Navy Blue)
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(0, 0, 128);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+
+    ctx.set_style(style);
 }
 
 #[cfg(test)]
