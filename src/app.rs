@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MIC_GRAPH_HISTORY_LEN: usize = 120;
 const MIC_GRAPH_SAMPLE_INTERVAL: Duration = Duration::from_millis(16);
 const WINDOW_NORMAL_SIZE: [f32; 2] = [620.0, 480.0];
-const WINDOW_RECORDING_SIZE: [f32; 2] = [420.0, 130.0];
+const WINDOW_RECORDING_SIZE: [f32; 2] = [420.0, 105.0];
 const WINDOW_RECORDING_MARGIN: f32 = 16.0;
 
 pub struct WgoApp {
@@ -432,6 +432,10 @@ impl WgoApp {
             .map(|size| (size.x - WINDOW_RECORDING_SIZE[0] - WINDOW_RECORDING_MARGIN).max(0.0))
             .unwrap_or(WINDOW_RECORDING_MARGIN);
 
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
+            WINDOW_RECORDING_SIZE[0],
+            WINDOW_RECORDING_SIZE[1],
+        )));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
             WINDOW_RECORDING_SIZE[0],
             WINDOW_RECORDING_SIZE[1],
@@ -449,6 +453,9 @@ impl WgoApp {
     }
 
     fn exit_recording_mode(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
+            420.0, 130.0,
+        )));
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
             egui::WindowLevel::Normal,
         ));
@@ -1443,7 +1450,11 @@ impl WgoApp {
         if self.last_transcription.is_empty() {
             ui.label("No transcription yet.");
         } else {
-            ui.add(egui::Label::new(&self.last_transcription).wrap());
+            egui::ScrollArea::vertical()
+                .id_salt("latest_transcription_scroll")
+                .show(ui, |ui| {
+                    ui.add(egui::Label::new(&self.last_transcription).wrap());
+                });
         }
     }
 
@@ -1528,13 +1539,7 @@ impl WgoApp {
         let is_recording = self.is_recording();
 
         let bg = ui.visuals().extreme_bg_color;
-        painter.rect_filled(rect, 6.0, bg);
-        painter.rect_stroke(
-            rect,
-            6.0,
-            egui::Stroke::new(1.0, ui.visuals().window_stroke().color),
-            egui::StrokeKind::Outside,
-        );
+        painter.rect_filled(rect, 0.0, bg);
 
         let wave_color = if is_recording {
             egui::Color32::from_rgb(240, 150, 60)
@@ -1612,9 +1617,12 @@ impl eframe::App for WgoApp {
         let is_recording = self.is_recording();
         self.was_recording = is_recording;
 
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            self.mic_graph_ui(ui);
-        });
+        egui::TopBottomPanel::top("top_panel")
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .show(ctx, |ui| {
+                self.mic_graph_ui(ui);
+            });
 
         if !is_recording {
             egui::TopBottomPanel::bottom("status_bar")
@@ -1624,7 +1632,13 @@ impl eframe::App for WgoApp {
                 });
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let central_frame = if is_recording {
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 4))
+        } else {
+            egui::Frame::central_panel(&ctx.style())
+        };
+
+        egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| {
             if is_recording {
                 self.controls_ui(ui, true);
             } else {
@@ -1632,13 +1646,9 @@ impl eframe::App for WgoApp {
 
                 match self.active_tab {
                     AppTab::Recorder => {
-                        egui::ScrollArea::vertical()
-                            .id_salt("recorder_tab_scroll")
-                            .show(ui, |ui| {
-                                self.controls_ui(ui, false);
-                                ui.separator();
-                                self.latest_transcription_ui(ui);
-                            });
+                        self.controls_ui(ui, false);
+                        ui.separator();
+                        self.latest_transcription_ui(ui);
                     }
                     AppTab::History => {
                         egui::ScrollArea::vertical()
