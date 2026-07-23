@@ -1664,7 +1664,7 @@ impl eframe::App for WgoApp {
         }
 
         let central_frame = if is_recording {
-            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 4))
+            egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 4))
         } else {
             egui::Frame::central_panel(&ctx.style())
         };
