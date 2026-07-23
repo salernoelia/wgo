@@ -7,8 +7,12 @@ use crate::audio_recorder::AudioSource;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AppTheme {
     #[default]
-    Modern,
-    Classic,
+    #[serde(alias = "Auto")]
+    System,
+    #[serde(alias = "Modern")]
+    Dark,
+    #[serde(alias = "Classic")]
+    Light,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +56,7 @@ impl Default for AppConfig {
             show_window_shortcut: "Alt+H".to_string(),
             minimize_on_stop: false,
             hold_to_record_key: Some("ControlLeft".to_string()),
-            theme: AppTheme::Modern,
+            theme: AppTheme::Dark,
         }
     }
 }
@@ -349,9 +353,18 @@ mod tests {
     #[test]
     fn round_trip_preserves_theme() {
         let mut cfg = AppConfig::default();
-        cfg.theme = AppTheme::Classic;
+        cfg.theme = AppTheme::Light;
         let content = serde_json::to_string(&cfg).unwrap();
         let parsed: AppConfig = serde_json::from_str(&content).unwrap();
-        assert_eq!(parsed.theme, AppTheme::Classic);
+        assert_eq!(parsed.theme, AppTheme::Light);
+    }
+
+    #[test]
+    fn legacy_theme_aliases_parse_correctly() {
+        let theme_modern: AppTheme = serde_json::from_str(r#""Modern""#).unwrap();
+        assert_eq!(theme_modern, AppTheme::Dark);
+
+        let theme_classic: AppTheme = serde_json::from_str(r#""Classic""#).unwrap();
+        assert_eq!(theme_classic, AppTheme::Light);
     }
 }
