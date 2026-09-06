@@ -24,6 +24,7 @@ pub enum HotkeyCommand {
     StartHoldRecording,
     StopHoldRecording,
     HoldKeyCaptured(String),
+    #[allow(dead_code)]
     ShortcutCaptured {
         target: ShortcutCaptureTarget,
         shortcut: String,
@@ -91,6 +92,7 @@ impl HotkeyBindings {
 enum RuntimeControl {
     Rebind(HotkeyBindings),
     StartCaptureHoldKey,
+    #[allow(dead_code)]
     StartCaptureShortcut(ShortcutCaptureTarget),
 }
 
@@ -120,6 +122,7 @@ impl HotkeyRuntime {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ShortcutCaptureTarget {
     Toggle,
     ShowWindow,
@@ -562,7 +565,7 @@ fn apply_bindings_macos(
 
     if let Some(toggle) = parse_shortcut(&bindings.toggle_shortcut).and_then(|s| s.to_hotkey()) {
         *toggle_id = Some(toggle.id());
-        if let Err(err) = manager.register(toggle.clone()) {
+        if let Err(err) = manager.register(toggle) {
             eprintln!(
                 "Failed to register toggle shortcut '{}': {err}",
                 bindings.toggle_shortcut
@@ -576,7 +579,7 @@ fn apply_bindings_macos(
 
     if let Some(show) = parse_shortcut(&bindings.show_window_shortcut).and_then(|s| s.to_hotkey()) {
         *show_id = Some(show.id());
-        if let Err(err) = manager.register(show.clone()) {
+        if let Err(err) = manager.register(show) {
             eprintln!(
                 "Failed to register show-window shortcut '{}': {err}",
                 bindings.show_window_shortcut
@@ -852,11 +855,11 @@ pub fn start_global_hotkeys(
             }
         });
 
-        return HotkeyRuntime {
+        HotkeyRuntime {
             control_tx,
             _listener: Some(listener),
             _hold_listener: Some(hold_listener),
-        };
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
