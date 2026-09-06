@@ -3,7 +3,9 @@ mod audio_recorder;
 mod config;
 mod groq_request;
 mod icon;
+mod local_whisper;
 mod shortcut_detector;
+mod transcriber;
 mod transcription_history;
 mod utils;
 
@@ -26,8 +28,13 @@ fn main() {
         ),
     );
 
+    let initial_title = match config.transcription_provider {
+        config::TranscriptionProvider::Local => "wgo [Local]",
+        config::TranscriptionProvider::Groq => "wgo [Cloud]",
+    };
+
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("wgo")
+        .with_title(initial_title)
         .with_inner_size([620.0, 480.0])
         // Keep the minimum small from startup so Wayland compositors that
         // ignore lowering min-size at runtime can still shrink for recording mode.
