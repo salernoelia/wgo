@@ -1,6 +1,6 @@
 # wgo
 
-A lightweight, cross-platform voice transcription utility designed for seamless dictation and automated note-taking. Built with Rust and `egui`, `wgo` captures system or microphone audio, processes media file imports, and uses Groq’s Whisper API to deliver near-instantaneous transcription directly to your system clipboard and local workspace.
+A lightweight, cross-platform voice transcription utility designed for seamless dictation and automated note-taking. Built with pure Rust and `egui`, `wgo` captures system or microphone audio, processes media file imports, and transcribes them directly to your system clipboard and local workspace using **local, on-device Whisper models** (with native Apple Silicon MLX GPU acceleration or whisper.cpp fallback) or **Groq Cloud API**.
 
 <table>
   <tr>
@@ -14,12 +14,15 @@ A lightweight, cross-platform voice transcription utility designed for seamless 
 
 ## Capabilities
 
+*   **Local-First & Cloud Transcription**: Transcribe 100% on-device with zero data leaving your computer. On macOS Apple Silicon, models run natively on the unified memory GPU via pure Rust MLX (`vona-mlx-whisper`). On Linux and Windows, high-performance quantized inference is provided via `whisper.cpp` bindings (`whisper-rs`). Or switch to the Groq Cloud API anytime for remote processing.
+*   **Automatic Bidirectional Fallback**: Never lose a transcription. If Local is primary and fails, `wgo` automatically falls back to Groq; if Groq is primary and fails (offline, rate limits, API key errors), it automatically falls back to Local. Active backends, fallback readiness, and fallback events are dynamically indicated in the window title and top bar badge.
+*   **One-Click Model Downloader**: Download and manage local Whisper models (`whisper-large-v3-turbo`) directly in the Settings tab with a "Download all" button, per-model controls, and real-time download speed and progress tracking.
 *   **Versatile Audio Routing**: Supports capturing from standard microphone hardware, direct desktop loopback audio, or both simultaneously (microphone + desktop mix). 
 *   **Dictation & Hold-to-Record**: Dictate your thoughts naturally with custom hotkeys. In addition to a global toggle, the app supports physical **Hold-to-Record** keys (such as `ControlLeft` or `AltGr`). The recording runs only as long as you hold the key down and instantly transcribes upon release.
-*   **Drag-and-Drop Media Processing**: Drop existing audio or video files directly into the window. For video formats, `wgo` automatically leverages local `ffmpeg` in a background subprocess to extract and compress the audio stream to a space-efficient AAC format before transcription.
+*   **Drag-and-Drop Media Processing**: Drop existing audio or video files directly into the window. For video formats, `wgo` automatically leverages local `ffmpeg` in a background subprocess to extract and compress the audio stream to a space-efficient format before transcription.
 *   **Automated Clipboard & Note Export**: Transcriptions are copied to your system clipboard the moment they are ready. Simultaneously, `wgo` generates clean Markdown files in a customizable output directory using custom tokenized patterns (e.g., `transcription_{date}_{time}.md`) complete with metadata YAML frontmatter.
 *   **Local History & Playback**: Browse, copy, or open previous note files directly within the application. The append-only historical database retains file paths allowing you to play back original recorded source files or reveal them in your system's file manager.
-*   **Hardware Native & Cross-Platform**: Package builds are available for macOS, Linux, and Windows, offering platform-native styling and exceptionally low memory footprint.
+*   **Hardware Native & Cross-Platform**: Package builds are available for macOS, Linux, and Windows, offering platform-native styling and exceptionally low memory footprint. Pure compiled native binaries—no Python runtime required.
 
 ---
 
@@ -67,16 +70,18 @@ While voice dictation relies entirely on internal audio engines, drag-and-drop *
 *   **Desktop Audio Capture**: Capturing desktop audio on Windows and Linux relies on your system’s active output device configuration. On macOS, system capture requires setting up a virtual loopback device (such as the open-source **BlackHole** driver) and selecting it as the capture source in the settings tab.
 
 ### Local Storage Structure
-Your recordings, system config, and history remain strictly under your control. By default, `wgo` structures files in platform-native local paths:
+Your recordings, system config, models, and history remain strictly under your control. By default, `wgo` structures files in platform-native local paths:
 
-| Platform | Configuration File (`config.json`) | Recordings Directory | Local Database (`history.json`) |
-| :--- | :--- | :--- | :--- |
-| **macOS** | `~/Library/Application Support/wgo/` | `~/Documents/wgo-recordings/` | `~/Library/Application Support/wgo/` |
-| **Linux** | `~/.config/wgo/` | `~/Documents/wgo-recordings/` | `~/.local/share/wgo/` |
-| **Windows** | `%LOCALAPPDATA%\wgo\` | `%USERPROFILE%\Documents\wgo-recordings\` | `%APPDATA%\wgo\` |
+| Platform | Configuration (`config.json`) | Whisper Models (`models/`) | Recordings Directory | Local Database (`history.json`) |
+| :--- | :--- | :--- | :--- | :--- |
+| **macOS** | `~/Library/Application Support/wgo/` | `~/Library/Application Support/wgo/models/` | `~/Documents/wgo-recordings/` | `~/Library/Application Support/wgo/` |
+| **Linux** | `~/.config/wgo/` | `~/.local/share/wgo/models/` | `~/Documents/wgo-recordings/` | `~/.local/share/wgo/` |
+| **Windows** | `%LOCALAPPDATA%\wgo\` | `%LOCALAPPDATA%\wgo\models\` | `%USERPROFILE%\Documents\wgo-recordings\` | `%APPDATA%\wgo\` |
 
-### External Transmission
-Audio files are sent directly to the Groq API securely over HTTPS using your private key. The application contains zero telemetry or secondary tracking platforms, meaning no audio data or transcription text is ever seen by third parties other than the endpoint API.
+### Privacy & Transmission
+*   **Local Provider (Default)**: Audio processing and Whisper inference happen completely on your device. Zero audio data, recordings, or transcriptions ever leave your machine.
+*   **Groq Cloud Provider**: If you switch to Groq, audio files are sent directly to the Groq Whisper API securely over HTTPS using your private API key.
+*   The application contains zero telemetry or secondary tracking platforms.
 
 ---
 
@@ -88,7 +93,9 @@ Start the app from your application launcher or your terminal:
 wgo
 ```
 
-On first run, navigate to the **Settings** tab to enter your Groq API key, which can be acquired directly from the [Groq Console](https://console.groq.com/).
+### Getting Started
+1. **Local Mode (Default)**: Open the **Settings** tab and click **Download Model** under the Local Whisper section. Once downloaded, all voice recordings and dropped media are transcribed 100% offline on your machine.
+2. **Groq Mode**: If you prefer cloud transcription, switch the provider to **Groq** in Settings and enter your API key from the [Groq Console](https://console.groq.com/).
 
 ### Default Global Controls
 
