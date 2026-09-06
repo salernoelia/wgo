@@ -1,4 +1,3 @@
-use crate::transcription_history::{TranscriptionHistory, TranscriptionRecord};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
@@ -229,7 +228,7 @@ impl AudioRecorder {
 
         // Try to get a 16kHz config — Whisper works best at 16kHz and it keeps files small.
         // If the device doesn't support it, fall back to the default rate.
-        const TARGET_RATE: cpal::SampleRate = cpal::SampleRate(8000);
+        const TARGET_RATE: cpal::SampleRate = cpal::SampleRate(16000);
         let stream_config = {
             let found_16k = device.supported_input_configs().ok().and_then(|mut cfgs| {
                 cfgs.find(|c| {
@@ -823,9 +822,7 @@ impl AudioRecorder {
         if let Some(ref wav_path) = completed_filename {
             let m4a_path = wav_path.replace(".wav", ".m4a");
             let status = std::process::Command::new("afconvert")
-                .args([
-                    "-f", "m4af", "-d", "aac", "-b", "32000", "-c", "1", wav_path, &m4a_path,
-                ])
+                .args(["-f", "m4af", "-d", "aac", "-c", "1", wav_path, &m4a_path])
                 .status();
             match status {
                 Ok(s) if s.success() => {
@@ -845,6 +842,7 @@ impl AudioRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcription_history::TranscriptionRecord;
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -972,11 +970,13 @@ mod tests {
                 .unwrap_or_default()
                 .as_secs(),
             audio_path: None,
+            backend: None,
         };
         assert_eq!(record.filename, "rec.wav");
         assert_eq!(record.transcription, "hello world");
         assert!(record.timestamp > 0, "timestamp should be non-zero");
         assert!(record.audio_path.is_none());
+        assert!(record.backend.is_none());
     }
 
     #[test]
