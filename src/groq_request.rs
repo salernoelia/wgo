@@ -10,9 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SUPPORTED_AUDIO_EXTS: [&str; 7] = ["mp3", "wav", "m4a", "ogg", "opus", "flac", "webm"];
 const SUPPORTED_VIDEO_EXTS: [&str; 19] = [
-    "mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg",
-    "f4v", "flv", "ts", "mts", "m2ts", "wmv", "3gp", "ogv",
-    "rm", "rmvb", "vob",
+    "mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg", "f4v", "flv", "ts", "mts", "m2ts",
+    "wmv", "3gp", "ogv", "rm", "rmvb", "vob",
 ];
 
 fn mime_for_ext(ext: &str) -> &'static str {
@@ -58,17 +57,17 @@ pub fn is_supported_media_file(file_path: &str) -> bool {
             .any(|candidate| candidate == &ext)
 }
 
-fn find_ffmpeg() -> Option<PathBuf> {
+pub fn find_ffmpeg() -> Option<PathBuf> {
     // Check PATH first (works in terminal-launched contexts)
     if let Ok(p) = which::which("ffmpeg") {
         return Some(p);
     }
     // macOS GUI apps don't inherit shell PATH — probe common install locations
     let candidates = [
-        "/opt/homebrew/bin/ffmpeg",   // Apple Silicon Homebrew
-        "/usr/local/bin/ffmpeg",       // Intel Homebrew / manual installs
+        "/opt/homebrew/bin/ffmpeg", // Apple Silicon Homebrew
+        "/usr/local/bin/ffmpeg",    // Intel Homebrew / manual installs
         "/usr/bin/ffmpeg",
-        "/opt/local/bin/ffmpeg",       // MacPorts
+        "/opt/local/bin/ffmpeg", // MacPorts
     ];
     for path in candidates {
         let p = PathBuf::from(path);
@@ -80,9 +79,8 @@ fn find_ffmpeg() -> Option<PathBuf> {
 }
 
 fn extract_audio_from_video(input_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let ffmpeg_path = find_ffmpeg().ok_or_else(|| {
-        "ffmpeg not found. Install it with: brew install ffmpeg".to_string()
-    })?;
+    let ffmpeg_path = find_ffmpeg()
+        .ok_or_else(|| "ffmpeg not found. Install it with: brew install ffmpeg".to_string())?;
 
     let stem = input_path
         .file_stem()
@@ -160,14 +158,12 @@ fn get_recordings_dir() -> PathBuf {
     AppConfig::load().recordings_dir_path()
 }
 
-fn resolve_audio_file_path(file_path: &str) -> PathBuf {
+pub fn resolve_audio_file_path(file_path: &str) -> PathBuf {
     resolve_audio_file_path_with(file_path, &get_recordings_dir(), &get_exe_dir())
 }
 
 fn resolve_audio_file_path_with(file_path: &str, recordings_dir: &Path, exe_dir: &Path) -> PathBuf {
-    if Path::new(file_path).is_absolute() {
-        PathBuf::from(file_path)
-    } else if file_path.contains('/') || file_path.contains('\\') {
+    if Path::new(file_path).is_absolute() || file_path.contains('/') || file_path.contains('\\') {
         PathBuf::from(file_path)
     } else {
         let recordings_path = recordings_dir.join(file_path);
@@ -238,21 +234,28 @@ fn chunk_audio_file(
     segment_time_secs: u32,
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     std::fs::create_dir_all(temp_dir)?;
-    
+
     let output_pattern = temp_dir.join("chunk_%03d.m4a");
-    
+
     let output = Command::new(ffmpeg_path)
         .args([
             "-y",
             "-i",
             &input_path.to_string_lossy(),
-            "-f", "segment",
-            "-segment_time", &segment_time_secs.to_string(),
-            "-reset_timestamps", "1",
-            "-c:a", "aac",
-            "-ac", "1",
-            "-ar", "16000",
-            "-b:a", "64k",
+            "-f",
+            "segment",
+            "-segment_time",
+            &segment_time_secs.to_string(),
+            "-reset_timestamps",
+            "1",
+            "-c:a",
+            "aac",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-b:a",
+            "64k",
             &output_pattern.to_string_lossy(),
         ])
         .output()?;
@@ -280,10 +283,10 @@ fn chunk_audio_file(
             }
         }
     }
-    
+
     // Sort alphabetically so chunk_000 is first, chunk_001 is second, etc.
     chunks.sort();
-    
+
     Ok(chunks)
 }
 
@@ -311,8 +314,12 @@ where
     let (audio_file_path, cleanup_path) = prepare_media_for_transcription(&media_file_path)?;
 
     // Check size of the audio file to determine if we need to chunk it.
-    let file_metadata = std::fs::metadata(&audio_file_path)
-        .map_err(|e| format!("Failed to read metadata of audio file at {:?}: {}", audio_file_path, e))?;
+    let file_metadata = std::fs::metadata(&audio_file_path).map_err(|e| {
+        format!(
+            "Failed to read metadata of audio file at {:?}: {}",
+            audio_file_path, e
+        )
+    })?;
     let file_size = file_metadata.len();
 
     let result = if file_size >= 20 * 1024 * 1024 {
@@ -460,13 +467,24 @@ mod tests {
         assert!(input_path.exists());
 
         let temp_dir = tempdir().expect("temp dir");
-        let chunks = chunk_audio_file(&ffmpeg_path, &input_path, temp_dir.path(), 1).expect("chunking failed");
-        
+        let chunks = chunk_audio_file(&ffmpeg_path, &input_path, temp_dir.path(), 1)
+            .expect("chunking failed");
+
         assert!(!chunks.is_empty(), "Should generate at least one chunk");
         for chunk in &chunks {
             assert!(chunk.exists());
-            assert!(chunk.file_name().unwrap().to_str().unwrap().starts_with("chunk_"));
-            assert!(chunk.file_name().unwrap().to_str().unwrap().ends_with(".m4a"));
+            assert!(chunk
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("chunk_"));
+            assert!(chunk
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with(".m4a"));
         }
     }
 
@@ -504,14 +522,14 @@ mod tests {
 
         let temp_dir = tempdir().expect("temp dir");
         let file_path = temp_dir.path().join("test_large.wav");
-        
+
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 8000,
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        
+
         {
             let mut writer = hound::WavWriter::create(&file_path, spec).unwrap();
             let samples = vec![0i16; 10000];
@@ -524,7 +542,11 @@ mod tests {
         }
 
         let file_size = std::fs::metadata(&file_path).unwrap().len();
-        assert!(file_size >= 20 * 1024 * 1024, "File size must be >= 20MB, got {}", file_size);
+        assert!(
+            file_size >= 20 * 1024 * 1024,
+            "File size must be >= 20MB, got {}",
+            file_size
+        );
 
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let call_count_clone = call_count.clone();

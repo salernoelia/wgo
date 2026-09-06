@@ -1,6 +1,7 @@
 /target
 
 *.wav
+!test_material/*.wav
 transcription_history.json
 .env
 .DS_Store

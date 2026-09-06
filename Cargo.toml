@@ -18,7 +18,7 @@ urlencoding = "2"
 rdev = { version = "0.5.3", features = ["unstable_grab"] }
 cpal = "0.16.0"
 hound = "3.5"
-reqwest = { version = "0.12.20", features = ["blocking", "multipart", "json"] }
+reqwest = { version = "0.12.20", features = ["blocking", "multipart", "json", "stream"] }
 self-replace = "1"
 flate2 = "1"
 tar = "0.4"
@@ -31,9 +31,16 @@ egui = "0.31"
 dirs = "5.0"
 chrono = { version = "0.4", default-features = true }
 which = "6"
+whisper-rs = "0.16.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 global-hotkey = "0.7"
+whisper-rs = { version = "0.16.0", features = ["metal"] }
+mlx-rs = { version = "0.25.3", features = ["metal"] }
+tokenizers = { version = "0.22", default-features = false }
+vona-mlx = "0.2.0"
+vona-mlx-speech = { version = "0.2.0", features = ["native-mlx"] }
+vona-mlx-whisper = { version = "0.2.0", features = ["native-mlx"] }
 
 [patch.crates-io]
 # rdev's macOS CGEventTap callback calls TISCopyCurrentKeyboardInputSource, which
