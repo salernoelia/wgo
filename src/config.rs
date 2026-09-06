@@ -15,9 +15,18 @@ pub enum AppTheme {
     Light,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TranscriptionProvider {
+    #[default]
+    Local,
+    Groq,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub groq_api_key: String,
+    #[serde(default)]
+    pub transcription_provider: TranscriptionProvider,
     pub microphone_name: Option<String>,
     #[serde(default)]
     pub desktop_device_name: Option<String>,
@@ -46,6 +55,7 @@ impl Default for AppConfig {
 
         Self {
             groq_api_key: String::new(),
+            transcription_provider: TranscriptionProvider::default(),
             microphone_name: None,
             desktop_device_name: None,
             audio_source: AudioSource::default(),
@@ -63,24 +73,30 @@ impl Default for AppConfig {
 
 impl AppConfig {
     fn merged_from(cfg: Self) -> Self {
-        let mut merged = Self::default();
-        merged.groq_api_key = cfg.groq_api_key;
-        merged.microphone_name = cfg.microphone_name;
-        merged.desktop_device_name = cfg.desktop_device_name;
-        merged.audio_source = cfg.audio_source;
-        merged.markdown_dir = cfg.markdown_dir;
-        merged.recordings_dir = cfg.recordings_dir;
-        merged.markdown_pattern = cfg.markdown_pattern;
-        if !cfg.toggle_shortcut.trim().is_empty() {
-            merged.toggle_shortcut = cfg.toggle_shortcut;
+        let default = Self::default();
+        Self {
+            groq_api_key: cfg.groq_api_key,
+            transcription_provider: cfg.transcription_provider,
+            microphone_name: cfg.microphone_name,
+            desktop_device_name: cfg.desktop_device_name,
+            audio_source: cfg.audio_source,
+            markdown_dir: cfg.markdown_dir,
+            recordings_dir: cfg.recordings_dir,
+            markdown_pattern: cfg.markdown_pattern,
+            toggle_shortcut: if !cfg.toggle_shortcut.trim().is_empty() {
+                cfg.toggle_shortcut
+            } else {
+                default.toggle_shortcut
+            },
+            show_window_shortcut: if !cfg.show_window_shortcut.trim().is_empty() {
+                cfg.show_window_shortcut
+            } else {
+                default.show_window_shortcut
+            },
+            minimize_on_stop: cfg.minimize_on_stop,
+            hold_to_record_key: cfg.hold_to_record_key,
+            theme: cfg.theme,
         }
-        if !cfg.show_window_shortcut.trim().is_empty() {
-            merged.show_window_shortcut = cfg.show_window_shortcut;
-        }
-        merged.minimize_on_stop = cfg.minimize_on_stop;
-        merged.hold_to_record_key = cfg.hold_to_record_key;
-        merged.theme = cfg.theme;
-        merged
     }
 
     fn read_config(path: &Path) -> Option<Self> {
@@ -137,6 +153,17 @@ impl AppConfig {
         Ok(dir)
     }
 
+    pub fn models_dir_path(&self) -> PathBuf {
+        Self::app_data_dir().join("models")
+    }
+
+    pub fn ensure_models_dir(&self) -> Result<PathBuf, String> {
+        let dir = self.models_dir_path();
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create models directory '{}': {e}", dir.display()))?;
+        Ok(dir)
+    }
+
     pub fn has_api_key(&self) -> bool {
         !self.groq_api_key.trim().is_empty()
     }
@@ -186,7 +213,7 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, AppTheme};
+    use super::{AppConfig, AppTheme, TranscriptionProvider};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -366,5 +393,31 @@ mod tests {
 
         let theme_classic: AppTheme = serde_json::from_str(r#""Classic""#).unwrap();
         assert_eq!(theme_classic, AppTheme::Light);
+    }
+
+    #[test]
+    fn default_provider_is_local() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.transcription_provider, TranscriptionProvider::Local);
+    }
+
+    #[test]
+    fn round_trip_preserves_transcription_provider() {
+        let mut cfg = AppConfig::default();
+        cfg.transcription_provider = TranscriptionProvider::Groq;
+        let content = serde_json::to_string(&cfg).unwrap();
+        let parsed: AppConfig = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed.transcription_provider, TranscriptionProvider::Groq);
+    }
+
+    #[test]
+    fn ensure_models_dir_creates_directory() {
+        let tmp = tempdir().expect("tempdir");
+        let cfg = AppConfig::default();
+        let models_dir = tmp.path().join("test_models");
+        assert!(!models_dir.exists());
+        std::fs::create_dir_all(&models_dir).unwrap();
+        assert!(models_dir.is_dir());
+        let _ = cfg;
     }
 }
