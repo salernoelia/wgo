@@ -9,6 +9,8 @@ pub struct TranscriptionRecord {
     pub timestamp: u64,
     #[serde(default)]
     pub audio_path: Option<String>,
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,6 +107,7 @@ mod tests {
             transcription: text.to_string(),
             timestamp: 1_700_000_000,
             audio_path: None,
+            backend: None,
         }
     }
 
@@ -113,7 +116,9 @@ mod tests {
     fn load_from_dir(dir: &std::path::Path) -> TranscriptionHistory {
         let path = dir.join("wgo").join("transcription_history.json");
         match std::fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| TranscriptionHistory::new()),
+            Ok(content) => {
+                serde_json::from_str(&content).unwrap_or_else(|_| TranscriptionHistory::new())
+            }
             Err(_) => TranscriptionHistory::new(),
         }
     }
@@ -188,6 +193,7 @@ mod tests {
             transcription: "spoken words".to_string(),
             timestamp: 1_700_000_000,
             audio_path: Some("/tmp/recording.m4a".to_string()),
+            backend: None,
         });
         save_to_dir(&h, tmp.path());
 
@@ -196,6 +202,23 @@ mod tests {
             loaded.records[0].audio_path.as_deref(),
             Some("/tmp/recording.m4a")
         );
+    }
+
+    #[test]
+    fn add_record_persists_backend() {
+        let tmp = tempdir().expect("tempdir");
+        let mut h = TranscriptionHistory::new();
+        h.records.push(TranscriptionRecord {
+            filename: "/tmp/note.md".to_string(),
+            transcription: "spoken words".to_string(),
+            timestamp: 1_700_000_000,
+            audio_path: None,
+            backend: Some("Local".to_string()),
+        });
+        save_to_dir(&h, tmp.path());
+
+        let loaded = load_from_dir(tmp.path());
+        assert_eq!(loaded.records[0].backend.as_deref(), Some("Local"));
     }
 
     // ── backward compatibility: old records without audio_path ───────────────
