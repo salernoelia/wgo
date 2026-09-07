@@ -1,0 +1,4 @@
+[env]
+# Build portable whisper.cpp CPU kernels instead of assuming the build host's ISA.
+# Also avoids incorrect ARM feature detection in Linux VMs. Metal is unaffected.
+GGML_NATIVE = "OFF"
