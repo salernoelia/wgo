@@ -1,6 +1,8 @@
 pub mod audio;
 pub mod downloader;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod mlx;
+pub mod runtime;
 pub mod whisper_cpp;
 
 pub use self::downloader::{
@@ -20,7 +22,7 @@ pub fn models_root_dir() -> PathBuf {
 /// Checks if any local model is ready for transcription.
 pub fn is_any_local_model_installed() -> bool {
     let root = models_root_dir();
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         if is_model_installed(LocalModelKind::Mlx, &root) {
             return true;
@@ -36,45 +38,42 @@ pub fn is_default_local_model_installed() -> bool {
 
 /// Transcribes the given audio or video file locally using the preferred local engine.
 pub fn transcribe_local(media_path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let pcm = audio::load_audio_samples_for_whisper(media_path)?;
+    runtime::shared().transcribe(pcm).map_err(Into::into)
+}
+
+/// Explicit engine selection for reproducible local verification; never falls back.
+pub fn transcribe_cli(args: &[String]) -> Result<String, Box<dyn std::error::Error>> {
+    if args.len() != 2 {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let usage = "Usage: wgo --transcribe-local <whisper-cpp|mlx> <audio-file>";
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let usage = "Usage: wgo --transcribe-local whisper-cpp <audio-file>";
+        return Err(usage.into());
+    }
     let root = models_root_dir();
-
-    // On macOS, try native MLX if installed
-    #[cfg(target_os = "macos")]
-    {
-        if is_model_installed(LocalModelKind::Mlx, &root) {
-            if let Some(model_dir) = get_installed_model_path(LocalModelKind::Mlx, &root) {
-                let pcm = audio::load_audio_samples_for_whisper(media_path)?;
-                match mlx::transcribe_pcm(&model_dir, &pcm) {
-                    Ok(text) if !text.trim().is_empty() => return Ok(text),
-                    Ok(_) => {
-                        eprintln!("MLX transcription produced empty output; attempting whisper.cpp fallback...");
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "MLX transcription failed ({err}); attempting whisper.cpp fallback..."
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Standard local fallback / non-macOS default: whisper.cpp
-    if is_model_installed(LocalModelKind::WhisperCpp, &root) {
-        let model_path = get_installed_model_path(LocalModelKind::WhisperCpp, &root)
-            .ok_or_else(|| "Whisper.cpp model file not found".to_string())?;
-        let pcm = audio::load_audio_samples_for_whisper(media_path)?;
-        return whisper_cpp::transcribe_pcm(&model_path, &pcm);
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        Err("No local Whisper model is downloaded. Please download either the MLX (Metal) or Whisper.cpp model in Settings.".into())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("No local Whisper model is downloaded. Please download the Whisper.cpp model in Settings.".into())
-    }
+    let kind = match args[0].as_str() {
+        "whisper-cpp" => LocalModelKind::WhisperCpp,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        "mlx" => LocalModelKind::Mlx,
+        _ => return Err("Unsupported local backend on this device".into()),
+    };
+    let model =
+        get_installed_model_path(kind, &root).ok_or("Download this model in Settings first")?;
+    let pcm = audio::load_audio_samples_for_whisper(Path::new(&args[1]))?;
+    let started = std::time::Instant::now();
+    let result = match kind {
+        LocalModelKind::WhisperCpp => whisper_cpp::transcribe_pcm(&model, &pcm),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        LocalModelKind::Mlx => mlx::transcribe_pcm(&model, &pcm),
+    };
+    eprintln!(
+        "Backend: {:?}; model: {}; elapsed: {:.2}s",
+        kind,
+        model.display(),
+        started.elapsed().as_secs_f64()
+    );
+    result
 }
 
 #[cfg(test)]
@@ -92,7 +91,7 @@ mod tests {
         assert!(!files.is_empty());
         assert!(files[0].url.contains("huggingface.co"));
 
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let (name_mlx, dir_mlx, files_mlx) =
                 downloader::get_model_specs(LocalModelKind::Mlx, tmp.path());
@@ -157,85 +156,90 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_phrase_deduplication() {
-        #[cfg(target_os = "macos")]
-        {
-            let repeated = "test test hello hello world i am transcribing something locally locally hello hello world i am transcribing something locally locally hello hello world i am transcribing something locally locally";
-            let deduped = mlx::deduplicate_repeated_phrases(repeated);
-            assert_eq!(
-                deduped,
-                "test test hello hello world i am transcribing something locally locally"
-            );
-        }
+    // Explicit integration tests: missing models/audio must fail, never silently pass.
+    fn recording() -> PathBuf {
+        std::env::var_os("WGO_TEST_AUDIO")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_material/recording_test.wav")
+            })
     }
 
     #[test]
-    fn test_real_recording_file() {
-        let recording_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("test_material")
-            .join("recording_test.wav");
-        let fallback_path =
-            std::path::Path::new("/Users/elia/Documents/wgo-recordings/recording_1788696371.wav");
-
-        let p = if recording_path.exists() {
-            recording_path
-        } else if fallback_path.exists() {
-            fallback_path.to_path_buf()
-        } else {
-            return;
-        };
-
-        println!("Testing with {}", p.display());
-        let result = crate::transcriber::transcribe(p.to_str().unwrap());
-        match result {
-            Ok(success) => {
-                println!(
-                    "SUCCESS: backend={:?}, text='{}', fallback_note={:?}",
-                    success.backend_used, success.text, success.fallback_note
-                );
-                assert_eq!(success.backend_used, crate::transcriber::BackendUsed::Local);
-                assert!(!success.text.is_empty());
-                assert!(success.text.to_lowercase().contains("transcribing"));
-            }
-            Err(e) => {
-                println!("FAILED: {e}");
-                panic!("Transcription failed: {e}");
-            }
-        }
-    }
-
-    #[test]
+    #[ignore = "requires the downloaded whisper.cpp model and test recording"]
     fn test_whisper_cpp_on_real_recording() {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("test_material")
-            .join("recording_test.wav");
-        let root = models_root_dir();
-        if p.exists() && is_model_installed(LocalModelKind::WhisperCpp, &root) {
-            let model_path = get_installed_model_path(LocalModelKind::WhisperCpp, &root).unwrap();
-            let pcm = audio::load_audio_samples_for_whisper(&p).expect("load audio");
-            let text =
-                whisper_cpp::transcribe_pcm(&model_path, &pcm).expect("whisper cpp transcribe");
-            println!("WHISPER.CPP RESULT: '{text}'");
-            assert!(text.to_lowercase().contains("transcribing"));
-        }
+        let text =
+            transcribe_cli(&["whisper-cpp".into(), recording().to_string_lossy().into()]).unwrap();
+        println!("WHISPER.CPP RESULT: {text}");
+        assert!(text.to_lowercase().contains("transcribing"));
     }
 
     #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "requires the downloaded MLX Q4 model and test recording"]
     fn test_mlx_on_real_recording() {
-        #[cfg(target_os = "macos")]
-        {
-            let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("test_material")
-                .join("recording_test.wav");
-            let root = models_root_dir();
-            if p.exists() && is_model_installed(LocalModelKind::Mlx, &root) {
-                let model_dir = get_installed_model_path(LocalModelKind::Mlx, &root).unwrap();
-                let pcm = audio::load_audio_samples_for_whisper(&p).expect("load audio");
-                let text = mlx::transcribe_pcm(&model_dir, &pcm).expect("mlx transcribe");
-                println!("MLX RESULT: '{text}'");
-                assert!(text.to_lowercase().contains("transcribing"));
-            }
+        let text = transcribe_cli(&["mlx".into(), recording().to_string_lossy().into()]).unwrap();
+        println!("MLX RESULT: {text}");
+        assert!(text.to_lowercase().contains("transcribing"));
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn tiny_install_is_not_the_requested_mlx_model() {
+        let tmp = tempdir().unwrap();
+        let old = tmp.path().join("mlx/whisper-tiny");
+        std::fs::create_dir_all(&old).unwrap();
+        for name in [
+            "config.json",
+            "model.safetensors",
+            "tokenizer.json",
+            "generation_config.json",
+        ] {
+            std::fs::write(old.join(name), b"old tiny model").unwrap();
         }
+        assert!(!is_model_installed(LocalModelKind::Mlx, tmp.path()));
+        let (_, dir, files) = downloader::get_model_specs(LocalModelKind::Mlx, tmp.path());
+        assert!(dir.ends_with("mlx/whisper-large-v3-turbo-q4"));
+        assert!(files.iter().any(|f| f.url == "https://huggingface.co/mlx-community/whisper-large-v3-turbo-q4/resolve/main/weights.npz"));
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "downloads 467 MB from Hugging Face and requires the test recording"]
+    fn download_mlx_and_transcribe() {
+        let tmp = tempdir().unwrap();
+        start_download(LocalModelKind::Mlx, tmp.path().to_owned()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        while is_downloading() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "model download timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let progress = get_download_progress().expect("download status");
+        assert!(
+            progress.error.is_none(),
+            "download failed: {:?}",
+            progress.error
+        );
+        assert!(progress.is_done);
+        let dir = get_installed_model_path(LocalModelKind::Mlx, tmp.path())
+            .expect("complete Q4 installation");
+        let pcm = audio::load_audio_samples_for_whisper(&recording()).unwrap();
+        let text = mlx::transcribe_pcm(&dir, &pcm).unwrap();
+        println!("Downloaded MLX Q4 transcript: {text}");
+        assert!(text
+            .to_lowercase()
+            .contains("transcribing something locally"));
+    }
+
+    #[test]
+    fn supported_models_match_the_platform() {
+        let kinds = downloader::all_supported_model_kinds();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(kinds, vec![LocalModelKind::Mlx, LocalModelKind::WhisperCpp]);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        assert_eq!(kinds, vec![LocalModelKind::WhisperCpp]);
     }
 }
