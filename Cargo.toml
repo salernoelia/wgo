@@ -18,6 +18,7 @@ urlencoding = "2"
 rdev = { version = "0.5.3", features = ["unstable_grab"] }
 cpal = "0.16.0"
 hound = "3.5"
+rubato = "0.16"
 reqwest = { version = "0.12.20", features = ["blocking", "multipart", "json", "stream"] }
 self-replace = "1"
 flate2 = "1"
@@ -36,13 +37,16 @@ whisper-rs = "0.16.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 global-hotkey = "0.7"
 whisper-rs = { version = "0.16.0", features = ["metal"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+mlx-sys = "0.2.0"
 mlx-rs = { version = "0.25.3", features = ["metal"] }
-tokenizers = { version = "0.22", default-features = false }
-vona-mlx = "0.2.0"
-vona-mlx-speech = { version = "0.2.0", features = ["native-mlx"] }
-vona-mlx-whisper = { version = "0.2.0", features = ["native-mlx"] }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+zip = { version = "3", default-features = false, features = ["deflate"] }
 
 [patch.crates-io]
+# Embed MLX Metal kernel sources for a relocatable single executable.
+mlx-sys = { path = "vendor/mlx-sys" }
 # rdev's macOS CGEventTap callback calls TISCopyCurrentKeyboardInputSource, which
 # asserts it runs on the main dispatch queue and aborts() otherwise. Our patched
 # version skips create_string_for_key on background threads (returns name = None).
@@ -68,4 +72,4 @@ assets = [
 	["README.md", "usr/share/doc/wgo/README.md", "644"],
 	["LICENSE", "usr/share/doc/wgo/LICENSE", "644"],
 ]
-depends = "libasound2, libx11-6, libxi6, libxtst6, libxinerama1, libxcursor1, libxrandr2, libxkbcommon0, libwayland-client0, libgl1, libssl3"
+depends = "libevdev2, libasound2, libx11-6, libxi6, libxtst6, libxinerama1, libxcursor1, libxrandr2, libxkbcommon0, libwayland-client0, libgl1, libssl3"
