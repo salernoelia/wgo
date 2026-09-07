@@ -8,7 +8,7 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalModelKind {
     WhisperCpp,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     Mlx,
 }
 
@@ -60,7 +60,7 @@ pub fn get_model_specs(
 ) -> (String, PathBuf, Vec<FileDownloadSpec>) {
     match kind {
         LocalModelKind::WhisperCpp => {
-            let name = "Whisper Large v3 Turbo (4-bit/5-bit quantized, whisper.cpp)".to_string();
+            let name = "Whisper Large v3 Turbo (5-bit quantized, whisper.cpp)".to_string();
             let dir = models_root.join("whisper-cpp");
             let files = vec![
                 FileDownloadSpec {
@@ -70,26 +70,26 @@ pub fn get_model_specs(
             ];
             (name, dir, files)
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         LocalModelKind::Mlx => {
-            let name = "openai/whisper-tiny (MLX Metal)".to_string();
-            let dir = models_root.join("mlx").join("whisper-tiny");
+            let name = "mlx-community/whisper-large-v3-turbo-q4 (MLX Metal)".to_string();
+            let dir = models_root.join("mlx").join("whisper-large-v3-turbo-q4");
             let files = vec![
                 FileDownloadSpec {
-                    url: "https://huggingface.co/openai/whisper-tiny/resolve/main/config.json".to_string(),
+                    url: "https://huggingface.co/mlx-community/whisper-large-v3-turbo-q4/resolve/main/config.json".to_string(),
                     relative_path: PathBuf::from("config.json"),
                 },
                 FileDownloadSpec {
-                    url: "https://huggingface.co/openai/whisper-tiny/resolve/main/tokenizer.json".to_string(),
+                    url: "https://huggingface.co/openai/whisper-large-v3-turbo/resolve/main/tokenizer.json".to_string(),
                     relative_path: PathBuf::from("tokenizer.json"),
                 },
                 FileDownloadSpec {
-                    url: "https://huggingface.co/openai/whisper-tiny/resolve/main/generation_config.json".to_string(),
+                    url: "https://huggingface.co/openai/whisper-large-v3-turbo/resolve/main/generation_config.json".to_string(),
                     relative_path: PathBuf::from("generation_config.json"),
                 },
                 FileDownloadSpec {
-                    url: "https://huggingface.co/openai/whisper-tiny/resolve/main/model.safetensors".to_string(),
-                    relative_path: PathBuf::from("model.safetensors"),
+                    url: "https://huggingface.co/mlx-community/whisper-large-v3-turbo-q4/resolve/main/weights.npz".to_string(),
+                    relative_path: PathBuf::from("weights.npz"),
                 },
             ];
             (name, dir, files)
@@ -116,7 +116,7 @@ pub fn get_installed_model_path(kind: LocalModelKind, models_root: &Path) -> Opt
         let (_, dir, files) = get_model_specs(kind, models_root);
         match kind {
             LocalModelKind::WhisperCpp => files.first().map(|f| dir.join(&f.relative_path)),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             LocalModelKind::Mlx => Some(dir),
         }
     } else {
@@ -135,7 +135,7 @@ pub fn delete_model(kind: LocalModelKind, models_root: &Path) -> Result<(), std:
                 }
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         LocalModelKind::Mlx => {
             if dir.exists() {
                 fs::remove_dir_all(&dir)?;
@@ -147,7 +147,7 @@ pub fn delete_model(kind: LocalModelKind, models_root: &Path) -> Result<(), std:
 
 pub fn all_supported_model_kinds() -> Vec<LocalModelKind> {
     vec![
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         LocalModelKind::Mlx,
         LocalModelKind::WhisperCpp,
     ]
