@@ -115,6 +115,8 @@ impl WgoApp {
     #[allow(clippy::arc_with_non_send_sync)]
     pub fn new(hotkey_rx: Receiver<HotkeyCommand>, hotkey_runtime: HotkeyRuntime) -> Self {
         let config = AppConfig::load();
+        crate::local_whisper::runtime::shared()
+            .set_local(config.transcription_provider == TranscriptionProvider::Local);
         let recorder = Arc::new(Mutex::new(AudioRecorder::new()));
 
         if let Ok(mut rec) = recorder.lock() {
@@ -934,6 +936,7 @@ impl WgoApp {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        let previous_provider = self.config.transcription_provider;
         ui.label(egui::RichText::new("Transcription Provider").strong());
         ui.horizontal(|ui| {
             ui.selectable_value(
@@ -948,6 +951,11 @@ impl WgoApp {
             );
         });
 
+        if self.config.transcription_provider != previous_provider {
+            crate::local_whisper::runtime::shared()
+                .set_local(self.config.transcription_provider == TranscriptionProvider::Local);
+            let _ = self.config.save();
+        }
         ui.add_space(6.0);
 
         match self.config.transcription_provider {
@@ -1357,10 +1365,23 @@ impl WgoApp {
 
     fn local_model_settings_ui(&mut self, ui: &mut egui::Ui) {
         let models_dir = self.config.models_dir_path();
+        use crate::local_whisper::runtime::Status;
+        match crate::local_whisper::runtime::shared().status() {
+            Status::Loading => {
+                ui.label("Loading local model into memory…");
+            }
+            Status::Ready(_) => {
+                ui.label("Local model loaded and ready");
+            }
+            Status::Failed(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            Status::Unloaded => {}
+        }
         let download_progress = crate::local_whisper::get_download_progress();
         let is_downloading = crate::local_whisper::is_downloading();
 
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let mlx_installed = crate::local_whisper::is_model_installed(
             crate::local_whisper::LocalModelKind::Mlx,
             &models_dir,
@@ -1396,7 +1417,7 @@ impl WgoApp {
             ui.add_space(4.0);
 
             // On macOS: Show MLX model option
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
                 let is_mlx_active = is_downloading
                     && download_progress.as_ref().and_then(|p| p.model_kind) == Some(crate::local_whisper::LocalModelKind::Mlx);
@@ -1404,7 +1425,7 @@ impl WgoApp {
                 ui.horizontal(|ui| {
                     ui.label("MLX Apple Silicon (Metal GPU):");
                     if mlx_installed {
-                        ui.label(egui::RichText::new("Installed (Whisper Tiny)").color(egui::Color32::from_rgb(40, 180, 40)));
+                        ui.label(egui::RichText::new("Installed (Large v3 Turbo Q4)").color(egui::Color32::from_rgb(40, 180, 40)));
                         if !is_downloading && ui.button("Delete").clicked() {
                             let _ = crate::local_whisper::delete_model(crate::local_whisper::LocalModelKind::Mlx, &models_dir);
                         }
@@ -1414,12 +1435,12 @@ impl WgoApp {
                         ui.label(egui::RichText::new("In queue...").color(ui.visuals().warn_fg_color));
                     } else {
                         ui.label("Not installed");
-                        if ui.button("Download (151 MB)").clicked() {
+                        if ui.button("Download (467 MB)").clicked() {
                             let _ = crate::local_whisper::start_download(crate::local_whisper::LocalModelKind::Mlx, models_dir.clone());
                         }
                     }
                 });
-                ui.small("Model: openai/whisper-tiny — native MLX engine on Apple Silicon Metal GPU.");
+                ui.small("Model: mlx-community/whisper-large-v3-turbo-q4 — native MLX engine on Apple Silicon Metal GPU.");
                 ui.add_space(4.0);
             }
 
@@ -1428,9 +1449,9 @@ impl WgoApp {
                 && download_progress.as_ref().and_then(|p| p.model_kind) == Some(crate::local_whisper::LocalModelKind::WhisperCpp);
 
             ui.horizontal(|ui| {
-                #[cfg(target_os = "macos")]
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 ui.label("Whisper.cpp (Fallback/Alternative):");
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                 ui.label("Whisper.cpp (Native Engine):");
 
                 if whisper_cpp_installed {
@@ -1449,7 +1470,7 @@ impl WgoApp {
                     }
                 }
             });
-            ui.small("Model: ggml-large-v3-turbo-q5_0.bin — native whisper.cpp engine with Metal GPU acceleration.");
+            ui.small("Model: ggml-large-v3-turbo-q5_0.bin — native whisper.cpp engine (Metal acceleration on macOS).");
 
             // Download progress bar
             if let Some(progress) = download_progress {
@@ -2319,5 +2340,11 @@ mod tests {
 
         let second_content = std::fs::read_to_string(&second).expect("read second content");
         assert!(second_content.contains("Backend: Groq"));
+    }
+}
+
+impl Drop for WgoApp {
+    fn drop(&mut self) {
+        crate::local_whisper::runtime::shared().shutdown();
     }
 }

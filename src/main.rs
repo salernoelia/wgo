@@ -17,6 +17,20 @@ use shortcut_detector::{start_global_hotkeys, HotkeyBindings};
 use std::sync::mpsc;
 
 fn main() {
+    // Run the same native engines without starting the GUI or global hotkeys.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--transcribe-local") {
+        let result = local_whisper::transcribe_cli(&args[2..]);
+        match result {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let config = AppConfig::load();
     let (hotkey_tx, hotkey_rx) = mpsc::channel();
     let hotkey_runtime = start_global_hotkeys(
