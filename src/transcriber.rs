@@ -28,11 +28,10 @@ pub fn resolve_audio_file_path(file_path: &str) -> PathBuf {
 
 /// Dispatches transcription to the primary provider with automatic fallback:
 /// - If Local is primary: tries Local first; if that fails and Groq API key is set, falls back to Groq.
-/// - If Groq is primary: tries Groq first; if that fails and a Local model is installed, falls back to Local.
+/// - If Groq is primary: stays in Cloud mode and reports API failures.
 pub fn transcribe(file_path: &str) -> Result<TranscriptionSuccess, Box<dyn std::error::Error>> {
     let config = AppConfig::load();
     let media_path = resolve_audio_file_path(file_path);
-    let has_local = crate::local_whisper::is_any_local_model_installed();
     let has_groq = config.has_api_key();
 
     match config.transcription_provider {
@@ -69,36 +68,13 @@ pub fn transcribe(file_path: &str) -> Result<TranscriptionSuccess, Box<dyn std::
             }
         }
         TranscriptionProvider::Groq => {
-            // Attempt 1: Groq
-            match crate::groq_request::transcribe_audio(file_path) {
-                Ok(text) => Ok(TranscriptionSuccess {
-                    text,
-                    backend_used: BackendUsed::Groq,
-                    fallback_note: None,
-                }),
-                Err(groq_err) => {
-                    eprintln!("Groq transcription failed: {groq_err}");
-                    if has_local {
-                        eprintln!("Falling back to Local Whisper model...");
-                        match crate::local_whisper::transcribe_local(&media_path) {
-                            Ok(text) => Ok(TranscriptionSuccess {
-                                text,
-                                backend_used: BackendUsed::Local,
-                                fallback_note: Some(format!(
-                                    "Groq transcription failed ({groq_err}); fell back to Local Whisper model."
-                                )),
-                            }),
-                            Err(local_err) => Err(format!(
-                                "Groq transcription failed: {groq_err} | Fallback Local transcription also failed: {local_err}"
-                            ).into()),
-                        }
-                    } else {
-                        Err(format!(
-                            "Groq transcription failed: {groq_err}. (Local fallback unavailable: no model installed)"
-                        ).into())
-                    }
-                }
-            }
+            // Cloud mode never loads a local model, including on API failure.
+            let text = crate::groq_request::transcribe_audio(file_path)?;
+            Ok(TranscriptionSuccess {
+                text,
+                backend_used: BackendUsed::Groq,
+                fallback_note: None,
+            })
         }
     }
 }
