@@ -32,9 +32,16 @@ flowchart TD
         HotkeyDetector["Shortcut Detector <br/> (shortcut_detector.rs)"]
         AudioRec["Audio Recorder <br/> (audio_recorder.rs)"]
         FfmpegProc["FFmpeg Subprocess <br/> (groq_request.rs)"]
-        TranscribeJob["Transcription Thread <br/> (groq_request.rs)"]
+        TranscribeJob["Transcription Job <br/> (transcriber.rs)"]
+        LocalRuntime["Local Model Runtime <br/> (local_whisper/runtime.rs)"]
     end
-    class HotkeyDetector,AudioRec,FfmpegProc,TranscribeJob worker
+    class HotkeyDetector,AudioRec,FfmpegProc,TranscribeJob,LocalRuntime worker
+
+    subgraph Local [Local Provider]
+        MlxModel["MLX Q4 <br/> Apple Silicon"]
+        WhisperCpp["whisper.cpp Q5 <br/> Other devices"]
+    end
+    class MlxModel,WhisperCpp storage
 
     %% Subgraph - External Services
     subgraph Cloud [External Services]
@@ -68,7 +75,12 @@ flowchart TD
 
     WgoApp -->|Spawns thread| TranscribeJob
     RecordingsFolder -->|Reads audio data| TranscribeJob
-    TranscribeJob ==>|HTTPS POST Multipart| GroqAPI
+    Config -->|Provider selection| LocalRuntime
+    TranscribeJob -->|Local PCM| LocalRuntime
+    LocalRuntime -->|Loads and reuses| MlxModel
+    LocalRuntime -->|Loads and reuses| WhisperCpp
+    LocalRuntime -->|Local transcript| TranscribeJob
+    TranscribeJob ==>|Cloud mode: HTTPS POST Multipart| GroqAPI
     GroqAPI ==>|Returns JSON text| TranscribeJob
     TranscribeJob -->|mpsc UiEvent| WgoApp
 

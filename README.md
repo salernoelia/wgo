@@ -22,13 +22,13 @@ A lightweight, cross-platform voice transcription utility designed for seamless 
 *   **Drag-and-Drop Media Processing**: Drop existing audio or video files directly into the window. For video formats, `wgo` automatically leverages local `ffmpeg` in a background subprocess to extract and compress the audio stream to a space-efficient format before transcription.
 *   **Automated Clipboard & Note Export**: Transcriptions are copied to your system clipboard the moment they are ready. Simultaneously, `wgo` generates clean Markdown files in a customizable output directory using custom tokenized patterns (e.g., `transcription_{date}_{time}.md`) complete with metadata YAML frontmatter.
 *   **Local History & Playback**: Browse, copy, or open previous note files directly within the application. The append-only historical database retains file paths allowing you to play back original recorded source files or reveal them in your system's file manager.
-*   **Hardware Native & Cross-Platform**: Package builds are available for macOS, Linux, and Windows, offering platform-native styling and exceptionally low memory footprint. Pure compiled native binaries—no Python runtime required.
+*   **Hardware Native & Cross-Platform**: Package builds are available for macOS, Linux, and Windows, offering platform-native styling and low memory use. Pure compiled native binaries with no Python runtime required.
 
 ---
 
 ## Technical Architecture
 
-The diagram below maps out how `wgo` isolates background worker threads and subprocesses from the primary GUI rendering thread, ensuring a smooth, non-blocking UI:
+The diagram below maps the GUI, recording, local model, and cloud transcription paths:
 
 ![WGO Architecture](diagrams/architecture.png)
 
