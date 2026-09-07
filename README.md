@@ -14,7 +14,7 @@ A lightweight, cross-platform voice transcription utility designed for seamless 
 
 ## Capabilities
 
-*   **Local-First & Cloud Transcription**: Transcribe 100% on-device with zero data leaving your computer. On macOS Apple Silicon, models run natively on the unified memory GPU via pure Rust MLX (`vona-mlx-whisper`). On Linux and Windows, high-performance quantized inference is provided via `whisper.cpp` bindings (`whisper-rs`). Or switch to the Groq Cloud API anytime for remote processing.
+*   **Local-First & Cloud Transcription**: Transcribe 100% on-device with zero data leaving your computer. On macOS Apple Silicon, models run natively on the unified memory GPU via native MLX (`mlx-rs`) using `mlx-community/whisper-large-v3-turbo-q4`. On Intel Macs, Linux and Windows, high-performance quantized inference is provided via `whisper.cpp` bindings (`whisper-rs`). Or switch to the Groq Cloud API anytime for remote processing.
 *   **Automatic Bidirectional Fallback**: Never lose a transcription. If Local is primary and fails, `wgo` automatically falls back to Groq; if Groq is primary and fails (offline, rate limits, API key errors), it automatically falls back to Local. Active backends, fallback readiness, and fallback events are dynamically indicated in the window title and top bar badge.
 *   **One-Click Model Downloader**: Download and manage local Whisper models (`whisper-large-v3-turbo`) directly in the Settings tab with a "Download all" button, per-model controls, and real-time download speed and progress tracking.
 *   **Versatile Audio Routing**: Supports capturing from standard microphone hardware, direct desktop loopback audio, or both simultaneously (microphone + desktop mix). 
@@ -108,3 +108,29 @@ wgo
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+### Native local transcription verification
+
+Download models in Settings → Local Models. Apple Silicon offers MLX Large v3
+Turbo Q4 (~467 MB including tokenizer); other devices offer whisper.cpp Large
+v3 Turbo Q5. An old Whisper Tiny download does not count as the MLX model.
+MLX is preferred when installed; inference errors are reported without silently
+switching models. Both engines compile into the executable, with no Python or
+external inference process. Model weights remain separate downloads.
+
+To run an engine explicitly (without the GUI or cloud fallback):
+
+```sh
+cargo build --release
+./target/release/wgo --transcribe-local mlx recording.wav
+./target/release/wgo --transcribe-local whisper-cpp recording.wav
+cargo test --release local_whisper
+cargo test --release local_whisper -- --ignored --nocapture --test-threads=1
+```
+
+Set `WGO_TEST_AUDIO` to override the integration tests' recording path. These
+recording tests require installed models and fail if a prerequisite is missing.
+The separate `download_mlx_and_transcribe` test downloads a fresh model (~467 MB).
+WAV decoding and resampling are native Rust; other imported media formats retain
+the existing ffmpeg requirement. MLX kernel sources and the remaining precompiled
+Metal library are embedded in the executable by the vendored `mlx-sys` patch.
+No runtime extraction or separate `mlx.metallib` is needed.
