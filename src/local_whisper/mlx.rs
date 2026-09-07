@@ -442,3 +442,12 @@ pub(super) fn memory_usage() -> (usize, usize) {
     }
     (active, cache)
 }
+
+#[cfg(test)]
+pub(super) fn peak_memory() -> usize {
+    let mut peak = 0;
+    unsafe {
+        mlx_sys::mlx_get_peak_memory(&mut peak);
+    }
+    peak
+}

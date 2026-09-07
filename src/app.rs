@@ -560,25 +560,27 @@ impl WgoApp {
     }
 
     pub fn can_transcribe(&self) -> bool {
-        let has_local = crate::local_whisper::is_any_local_model_installed();
         let has_groq = has_non_empty_api_key(&self.config);
-        has_local || has_groq
+        match self.config.transcription_provider {
+            TranscriptionProvider::Groq => has_groq,
+            TranscriptionProvider::Local => {
+                has_groq || crate::local_whisper::is_any_local_model_installed()
+            }
+        }
     }
 
     pub fn missing_transcription_prerequisite_message(&self) -> String {
-        let has_local = crate::local_whisper::is_any_local_model_installed();
-        let has_groq = has_non_empty_api_key(&self.config);
-        if !has_local && !has_groq {
-            match self.config.transcription_provider {
-                TranscriptionProvider::Local => {
-                    "Download a local Whisper model or set a Groq API key in Settings before recording.".to_string()
-                }
-                TranscriptionProvider::Groq => {
-                    "Set a Groq API key or download a local Whisper model in Settings before recording.".to_string()
-                }
+        if self.can_transcribe() {
+            return String::new();
+        }
+        match self.config.transcription_provider {
+            TranscriptionProvider::Local => {
+                "Download a local Whisper model or set a Groq API key in Settings before recording."
+                    .to_string()
             }
-        } else {
-            String::new()
+            TranscriptionProvider::Groq => {
+                "Set a Groq API key in Settings before recording in Cloud mode.".to_string()
+            }
         }
     }
 

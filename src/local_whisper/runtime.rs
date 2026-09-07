@@ -197,6 +197,12 @@ mod tests {
             "/Users/elia/Documents/wgo-recordings/recording_1788696371.wav",
         ))
         .unwrap();
+        assert_eq!(runtime.status(), Status::Unloaded);
+        assert!(runtime
+            .transcribe(pcm.clone())
+            .unwrap_err()
+            .contains("Cloud mode"));
+        assert_eq!(super::super::mlx::memory_usage(), (0, 0));
         for round in 0..2 {
             runtime.set_local(true);
             wait(&runtime, Status::Ready(LocalModelKind::Mlx));
@@ -209,6 +215,7 @@ mod tests {
                 "AFTER INFERENCE {round}: {:?}",
                 super::super::mlx::memory_usage()
             );
+            println!("PEAK: {}", super::super::mlx::peak_memory());
             runtime.set_local(false);
             wait(&runtime, Status::Unloaded);
             let (active, cache) = super::super::mlx::memory_usage();
