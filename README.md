@@ -15,7 +15,7 @@ A lightweight, cross-platform voice transcription utility designed for seamless 
 ## Capabilities
 
 *   **Local-First & Cloud Transcription**: Transcribe 100% on-device with zero data leaving your computer. On macOS Apple Silicon, models run natively on the unified memory GPU via native MLX (`mlx-rs`) using `mlx-community/whisper-large-v3-turbo-q4`. On Intel Macs, Linux and Windows, high-performance quantized inference is provided via `whisper.cpp` bindings (`whisper-rs`). Or switch to the Groq Cloud API anytime for remote processing.
-*   **Automatic Bidirectional Fallback**: Never lose a transcription. If Local is primary and fails, `wgo` automatically falls back to Groq; if Groq is primary and fails (offline, rate limits, API key errors), it automatically falls back to Local. Active backends, fallback readiness, and fallback events are dynamically indicated in the window title and top bar badge.
+*   **Provider-aware model memory**: Local mode preloads the preferred installed model in the background and reuses it for recordings. Cloud mode unloads the model and never loads it as an API fallback. Local failures can still fall back to Groq when an API key is configured.
 *   **One-Click Model Downloader**: Download and manage local Whisper models (`whisper-large-v3-turbo`) directly in the Settings tab with a "Download all" button, per-model controls, and real-time download speed and progress tracking.
 *   **Versatile Audio Routing**: Supports capturing from standard microphone hardware, direct desktop loopback audio, or both simultaneously (microphone + desktop mix). 
 *   **Dictation & Hold-to-Record**: Dictate your thoughts naturally with custom hotkeys. In addition to a global toggle, the app supports physical **Hold-to-Record** keys (such as `ControlLeft` or `AltGr`). The recording runs only as long as you hold the key down and instantly transcribes upon release.
@@ -134,3 +134,15 @@ WAV decoding and resampling are native Rust; other imported media formats retain
 the existing ffmpeg requirement. MLX kernel sources and the remaining precompiled
 Metal library are embedded in the executable by the vendored `mlx-sys` patch.
 No runtime extraction or separate `mlx.metallib` is needed.
+
+Local model residency follows the provider selection immediately, without requiring
+Save. A download completed in Local mode is automatically loaded; deleting the
+loaded model releases it and selects another installed local model if available.
+Switching to Cloud unloads the model and clears MLX scratch memory. An in-flight
+native operation finishes before unloading; closing the process releases all memory.
+
+To verify residency, reuse, unloading and reloading with the installed MLX model:
+
+```sh
+cargo test --release resident_model_lifecycle -- --ignored --nocapture --test-threads=1
+```
