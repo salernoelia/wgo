@@ -67,7 +67,8 @@ While voice dictation relies entirely on internal audio engines, drag-and-drop *
 
 ### System Permissions
 *   **macOS Accessibility**: On macOS, global keyboard listeners that hook outside the focused window require Accessibility permissions. To use **Hold-to-Record** or customized background hotkeys, you will be prompted to allow `wgo` in `System Settings → Privacy & Security → Accessibility`.
-*   **Desktop Audio Capture**: Capturing desktop audio on Windows and Linux relies on your system’s active output device configuration. On macOS, system capture requires setting up a virtual loopback device (such as the open-source **BlackHole** driver) and selecting it as the capture source in the settings tab.
+*   **Desktop Audio Capture**: On macOS 13 or later, wgo captures system output directly using ScreenCaptureKit. Allow **Screen & System Audio Recording** for wgo in `System Settings → Privacy & Security` when prompted. Microphone + desktop recording also needs microphone permission. On Windows and Linux, desktop capture still uses a configured loopback input device.
+*   **Saved audio**: wgo finalizes and keeps the original WAV recording before starting transcription. A transcription failure does not remove the audio file.
 
 ### Local Storage Structure
 Your recordings, system config, models, and history remain strictly under your control. By default, `wgo` structures files in platform-native local paths:

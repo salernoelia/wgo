@@ -121,13 +121,17 @@ jobs:
           <dict>
             <key>CFBundleName</key>          <string>wgo</string>
             <key>CFBundleExecutable</key>    <string>wgo</string>
-            <key>CFBundleIdentifier</key>    <string>com.yourname.wgo</string>
+            <key>CFBundleIdentifier</key>    <string>com.salernoelia.wgo</string>
             <key>CFBundleVersion</key>       <string>${VERSION}</string>
             <key>CFBundleShortVersionString</key> <string>${VERSION}</string>
             <key>CFBundlePackageType</key>   <string>APPL</string>
             <key>CFBundleIconFile</key>      <string>icon</string>
             <key>NSMicrophoneUsageDescription</key>
             <string>wgo needs microphone access to record audio for transcription.</string>
+            <key>NSScreenCaptureUsageDescription</key>
+            <string>wgo needs Screen &amp; System Audio Recording access to record desktop audio for transcription.</string>
+            <key>NSAudioCaptureUsageDescription</key>
+            <string>wgo needs access to system audio to record desktop sound for transcription.</string>
           </dict>
           </plist>
           EOF
