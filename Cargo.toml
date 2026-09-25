@@ -54,6 +54,9 @@ rdev = { path = "vendor/rdev" }
 
 [dev-dependencies]
 
+[build-dependencies]
+cc = "1"
+
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=/DEBUG:NONE"]
 

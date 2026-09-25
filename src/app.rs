@@ -720,6 +720,7 @@ impl WgoApp {
                     return;
                 }
                 Err(err) => {
+                    self.exit_recording_mode(ctx);
                     self.status_line = err;
                     return;
                 }
@@ -1032,27 +1033,36 @@ impl WgoApp {
             AudioSource::DesktopOnly | AudioSource::MicAndDesktop
         ) {
             ui.add_space(8.0);
-            ui.label("Desktop audio device");
-            egui::ComboBox::from_id_salt("desktop_audio_combo")
-                .selected_text(
-                    self.selected_desktop_device
-                        .clone()
-                        .unwrap_or_else(|| "Default device".to_string()),
-                )
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.selected_desktop_device, None, "Default device");
-                    for device in &self.desktop_devices {
+            #[cfg(target_os = "macos")]
+            ui.small("macOS system output is captured directly. Allow Screen & System Audio Recording when prompted.");
+            #[cfg(not(target_os = "macos"))]
+            {
+                ui.label("Desktop audio device");
+                egui::ComboBox::from_id_salt("desktop_audio_combo")
+                    .selected_text(
+                        self.selected_desktop_device
+                            .clone()
+                            .unwrap_or_else(|| "Default device".to_string()),
+                    )
+                    .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.selected_desktop_device,
-                            Some(device.clone()),
-                            device,
+                            None,
+                            "Default device",
                         );
-                    }
-                });
+                        for device in &self.desktop_devices {
+                            ui.selectable_value(
+                                &mut self.selected_desktop_device,
+                                Some(device.clone()),
+                                device,
+                            );
+                        }
+                    });
 
-            ui.small(
+                ui.small(
                 "Tip: system audio usually requires a loopback/virtual device (for example BlackHole).",
             );
+            }
         }
 
         ui.add_space(8.0);
