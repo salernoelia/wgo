@@ -1315,6 +1315,11 @@ impl WgoApp {
                                 .clicked()
                         {
                             action = UpdateAction::PerformUpdate(download_url.clone());
+                        } else {
+                            ui.small("The update package is still being published.");
+                            if ui.small_button("Check again").clicked() {
+                                action = UpdateAction::CheckUpdates;
+                            }
                         }
                     }
                 }
@@ -1603,8 +1608,8 @@ impl WgoApp {
                         {
                             self.perform_self_update(download_url);
                         }
-                    } else if ui.small_button("See release").clicked() {
-                        self.active_tab = AppTab::Settings;
+                    } else if ui.small_button("Check again").clicked() {
+                        self.check_for_updates();
                     }
                 });
             }

@@ -168,11 +168,33 @@ jobs:
         run: cp target/release/wgo.exe wgo-windows.exe
         shell: bash
 
-      - name: Upload release asset
+      - name: Upload build assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: ${{ matrix.artifact_files }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish complete release
+    needs: [create-tag, build]
+    if: >-
+      needs.create-tag.result == 'success' &&
+      needs.build.result == 'success' &&
+      (needs.create-tag.outputs.tag_exists == 'false' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download platform assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.create-tag.outputs.version }}
           fail_on_unmatched_files: true
-          files: ${{ matrix.artifact_files }}
+          files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
